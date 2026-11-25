@@ -21,8 +21,8 @@ PLIST="$OUT/Contents/Info.plist"
 "$PB" -c "Set :CFBundleIdentifier local.azur-promilia-launcher" "$PLIST" 2>/dev/null \
   || "$PB" -c "Add :CFBundleIdentifier string local.azur-promilia-launcher" "$PLIST"
 "$PB" -c "Set :CFBundleName Azur Promilia Launcher" "$PLIST" 2>/dev/null || true
-"$PB" -c "Add :CFBundleShortVersionString string 0.1.1" "$PLIST" 2>/dev/null \
-  || "$PB" -c "Set :CFBundleShortVersionString 0.1.1" "$PLIST"
+"$PB" -c "Add :CFBundleShortVersionString string 0.2.0" "$PLIST" 2>/dev/null \
+  || "$PB" -c "Set :CFBundleShortVersionString 0.2.0" "$PLIST"
 codesign --force --sign - "$OUT" 2>/dev/null
 
 echo "만들었어요: $OUT"

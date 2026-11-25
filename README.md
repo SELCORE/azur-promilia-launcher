@@ -1,19 +1,19 @@
 # 아주르 프로밀리아 런처 (무료 Wine + DXMT, 실험 단계)
 
-CrossOver 없이 무료 Wine과 DXMT로 넥슨 플러그와 아주르 프로밀리아(한국 PC판)를 Apple Silicon 맥에서 돌리는 비공식 런처예요. Yaagl과 같은 방식이에요.
+CrossOver 없이 무료 Wine과 DXMT로 넥슨 플러그와 아주르 프로밀리아(한국 PC판)를 Apple Silicon 맥에서 돌리는 비공식 런처예요. Wine은 CodeWeavers가 공개한 CrossOver 소스로 이 저장소에서 직접 빌드해서 배포해요.
 
-> **비공식 실험 프로젝트예요.** 넥슨, 만쥬, CodeWeavers, Yaagl과 관련이 없어요.
+> **비공식 실험 프로젝트예요.** 넥슨, 만쥬, CodeWeavers와 관련이 없어요.
 > 넥슨은 macOS와 Wine을 지원하지 않아요. 계정 제재 등의 위험은 본인 책임이에요.
 > 넥슨 파일은 이 저장소에 없어요. 실행할 때 넥슨 공식 서버(`platform.nexon.com`)에서 받아요.
 
-## 지금 상태 (2026-11-26 새벽 기준)
+## 지금 상태 (2026-11-26 기준)
 
 | 항목 | 결과 |
 |---|---|
-| Wine·DXMT 자동 다운로드 (GitHub, 체크섬 확인) | 됨 |
+| 직접 빌드한 Wine + DXMT 런타임 자동 다운로드 (체크섬 확인) | 됨 |
 | 넥슨 플러그 화면 표시, 로그인 | 됨 |
 | CrossOver에 받아 둔 게임을 "설치 완료"로 인식 | 됨 (다시 받지 않고 연결) |
-| 게임 실행 파일: DXMT 그래픽, 넥슨 보안(NGS-X) 초기화 | 됨: 7번 중 5번. 나머지 2번은 DXMT 초기화 중 튕김 (아래 알려진 문제) |
+| 게임 실행 파일: DXMT 그래픽, 넥슨 보안(NGS-X) 초기화 | 됨 (자체 빌드 런타임에서 3번 중 3번) |
 | WebView2 자동 설치 (Microsoft 공식 설치 프로그램, 109 버전) | 됨 |
 | CrossOver 없이 넥슨 플러그에서 게임 설치 시작 | 됨 (NGM이 WebView2를 띄우고 다운로드 시작까지 확인) |
 | 넥슨 플러그에서 게임 실행, 실제 플레이 | **확인 전** (11월 26일 11시 오픈 뒤 확인) |
@@ -21,7 +21,7 @@ CrossOver 없이 무료 Wine과 DXMT로 넥슨 플러그와 아주르 프로밀�
 
 게임 실행 파일은 런처를 거치지 않고 직접 켜서 확인했어요. 로그인 정보가 없어서 로그인 SDK 단계(오류 10121)에서 꺼지는 게 정상이에요. CrossOver에서도 같은 단계까지 가요.
 
-**테스트 환경:** MacBook Pro (M5 Pro, 24GB), macOS 27.0.1, Wine 11.0 (CrossOver 공개 소스 빌드), DXMT 654f547
+**테스트 환경:** MacBook Pro (M5 Pro, 24GB), macOS 27.0.1, Wine (CrossOver 26.3 공개 소스로 직접 빌드), DXMT v0.80
 
 ## 쓰는 법
 
@@ -46,9 +46,8 @@ open "dist/Azur Promilia Launcher.app"
 
 확인 창이 뜨고 준비를 시작해요. 인터넷 속도에 따라 몇 분 걸려요.
 
-1. 무료 Wine(약 435MB)과 DXMT(약 31MB)를 GitHub에서 자동으로 받아요.
-   - 받은 파일은 체크섬으로 테스트한 빌드와 같은지 확인해요.
-   - 이 맥에 Yaagl이 받아 둔 같은 버전이 있으면 받지 않고 그걸 복사해서 써요.
+1. 이 저장소의 릴리스에서 Wine + DXMT 런타임(약 281MB)을 받아요.
+   - 받은 파일은 체크섬으로 확인해요.
 2. NGM에 필요한 WebView2 런타임을 Microsoft 공식 설치 프로그램으로 설치해요 (약 150MB).
    - 최신 버전은 Wine에서 잘 돌지 않아서, 설치하는 동안만 윈도우 버전을 Windows 7로 알려서 109 버전을 받아요.
    - 이 버전으로 고정되게 자동 업데이트를 꺼요.
@@ -70,8 +69,8 @@ open "dist/Azur Promilia Launcher.app"
 
 | 명령어 | 하는 일 |
 |---|---|
-| `./azurctl.sh setup` | 모두 준비해요. 옵션: `--wine-from`, `--dxmt-from`, `--webview2-from`, `--import-crossover <보틀>` |
-| `./azurctl.sh detect-sources` | 이 맥에서 재사용할 수 있는 Wine, DXMT, WebView2, 게임을 찾아 setup 옵션으로 출력해요 |
+| `./azurctl.sh setup` | 모두 준비해요. 옵션: `--runtime-from <tar.xz>`, `--webview2-from <폴더>`, `--import-crossover <보틀>` |
+| `./azurctl.sh detect-sources` | CrossOver 보틀에서 재사용할 수 있는 WebView2와 게임을 찾아 setup 옵션으로 출력해요 |
 | `./azurctl.sh plug` | 넥슨 플러그를 켜요 |
 | `./azurctl.sh stop` | 이 런처의 Wine 프로세스를 모두 종료해요 |
 | `./azurctl.sh status` | 설치 상태를 보여줘요 |
@@ -80,9 +79,9 @@ open "dist/Azur Promilia Launcher.app"
 
 ## 알려진 문제
 
-- **DXMT 초기화 중 가끔 튕김**
-  - 게임을 켜자마자 `NSInvalidArgumentException ... newComputePipelineStateWithDescriptor` 오류로 꺼질 때가 있어요.
-  - 다시 켜면 대부분 넘어가요. 원인은 아직 몰라요.
+- **DXMT 초기화 중 튕김 (예전 버전)**
+  - 예전 런타임(DXMT 654f547)에서는 게임을 켜자마자 `NSInvalidArgumentException` 오류로 가끔 꺼졌어요.
+  - 지금 런타임(DXMT v0.80)에서는 3번 시험해서 한 번도 나지 않았어요. 다시 나면 알려 주세요.
 - **키보드 입력 (한글 입력기)**
   - 무료 Wine은 맥의 한글 입력기를 제대로 처리하지 못해요. CrossOver에는 이 문제를 고치는 자체 수정이 있어요.
   - 맥 입력 소스가 한글인 상태로 넥슨 플러그를 켜면, 영문으로 바꿔 쳐도 한글이 들어가거나 아무것도 입력되지 않을 수 있어요.
@@ -93,6 +92,15 @@ open "dist/Azur Promilia Launcher.app"
 - **넥슨 플러그 창 표시**
   - 소프트웨어 렌더링 옵션(`--use-gl=swiftshader --use-angle=swiftshader --in-process-gpu`)으로 켜요. 그래야 화면이 나와요.
 
+## 런타임 직접 빌드하기
+
+GitHub Actions의 **build-runtime** 워크플로를 실행하면 Wine + DXMT 런타임이 만들어져요. 맥에서 직접 빌드하려면 이렇게 하세요.
+
+```bash
+runtime/build-runtime.sh all    # 결과: runtime-work/out/azur-runtime-*.tar.xz
+./azurctl.sh setup --runtime-from runtime-work/out/azur-runtime-*.tar.xz
+```
+
 ## 제거
 
 1. `./azurctl.sh stop`을 실행해요.
@@ -100,7 +108,7 @@ open "dist/Azur Promilia Launcher.app"
 
 ## 출처와 라이선스
 
-- **Wine:** CodeWeavers가 공개한 소스로 만든 빌드를 [Yaagl 프로젝트의 릴리스](https://github.com/yaagl/anime-game-wine/releases)에서 받아요. Wine은 LGPL 라이선스예요.
-- **DXMT:** [3Shain/dxmt](https://github.com/3Shain/dxmt) 빌드를 같은 릴리스에서 받아요.
-- **설치 방식:** DXMT를 Wine에 넣는 방식은 [Yaagl](https://github.com/yaagl/yet-another-anime-game-launcher)(MIT)을 참고했어요.
+- **Wine:** CodeWeavers가 공개한 [CrossOver 26.3 소스](https://media.codeweavers.com/pub/crossover/source/crossover-sources-26.3.0.tar.gz)를 고치지 않고 [`runtime/build-runtime.sh`](runtime/build-runtime.sh)로 빌드해요 (LGPL).
+- **DXMT:** [3Shain/dxmt v0.80](https://github.com/3Shain/dxmt/releases/tag/v0.80) 공식 릴리스를 넣어요 (CodeWeavers의 Feifan He 제작, LGPL).
+- **라이브러리:** GMP, Nettle, GnuTLS, FreeType을 각 공식 소스 릴리스에서 같은 스크립트로 빌드해 넣어요. 정확한 출처는 런타임 안의 `SOURCES.txt`에 있어요.
 - **이 저장소:** 스크립트는 MIT 라이선스예요. 넥슨, 넥슨 플러그, 아주르 프로밀리아는 각 권리자의 상표이자 저작물이에요.

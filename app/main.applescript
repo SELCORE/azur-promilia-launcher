@@ -13,7 +13,7 @@ on run
 	set setupState to do shell script ctl & " status-code"
 	if setupState is not "ready" then
 		set msg to "처음 실행이라 준비가 필요해요. 몇 분 걸려요." & return & return & ¬
-			"• 무료 Wine과 DXMT, WebView2를 받아요 (이 맥에 이미 있으면 그걸 써요)" & return & ¬
+			"• Wine + DXMT 런타임(약 281MB)과 WebView2를 받아요" & return & ¬
 			"• 넥슨 공식 서버에서 넥슨 플러그와 NGM을 받아요" & return & ¬
 			"• CrossOver에 받아 둔 게임이 있으면 다시 받지 않고 가져와요" & return & return & ¬
 			"비공식 런처예요. 넥슨은 맥을 지원하지 않고, 계정 제재 등의 위험은 본인 책임이에요."

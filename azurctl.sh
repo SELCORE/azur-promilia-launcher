@@ -6,9 +6,9 @@
 #   ./azurctl.sh stop             이 런처의 Wine 프로세스를 모두 종료해요
 #   ./azurctl.sh status           설치 상태를 보여줘요
 #
-# 개별 단계: install-wine, install-dxmt, init-prefix, install-webview2, install-plug, install-ngm,
+# 개별 단계: install-runtime, init-prefix, install-webview2, install-plug, install-ngm,
 #           configure, link-game, import-crossover, game-direct, winecfg, shell
-# 내려받는 파일은 모두 원래 배포처(넥슨 공식 서버, Yaagl 프로젝트의 GitHub 릴리스)에서 받아요.
+# 내려받는 곳: 이 저장소의 GitHub 릴리스(직접 빌드한 Wine + DXMT 런타임), Microsoft(WebView2), 넥슨 공식 서버.
 set -euo pipefail
 
 APP_HOME="${AZUR_HOME:-$HOME/Library/Application Support/Azur Promilia Launcher}"
@@ -18,32 +18,31 @@ LOG_DIR="$APP_HOME/logs"
 DRIVE_C="$PREFIX/drive_c"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-# Wine (CodeWeavers의 공개 소스로 만든 빌드)와 DXMT(DirectX 11 -> Metal). Yaagl 프로젝트가 배포하는 빌드예요.
-WINE_URL="https://github.com/yaagl/anime-game-wine/releases/download/wine-crossover-11.0-1-signed/wine-crossover-11.0-1-osx64-signed.tar.xz"
-WINE_SHA256="89fa7e90fb626523a90d5867a03c6be785d017176739c6320a3b86c7838c3a35"
-DXMT_URL="https://github.com/yaagl/anime-game-wine/releases/download/dxmt-654f547/dxmt-654f547ffab4e0c395ee368aad52bb4586b04576.zip"
-DXMT_COMMIT="654f547ffab4e0c395ee368aad52bb4586b04576"
-DXMT_D3D11_SHA256="fbb95116abaf69a55495fcffc8956bcfbe2b815f3862e44a01d18329bf668739"
-DXMT_WINEMETAL_SHA256="2d6966b5b445c781eff2d2b180208a8c5c0679b147f6d963180f28b11520bcdd"
+# Wine + DXMT 런타임: CodeWeavers가 공개한 CrossOver 소스로 이 저장소의 GitHub Actions에서 직접 빌드하고
+# DXMT 공식 릴리스를 넣은 것이에요 (runtime/build-runtime.sh). 이 저장소의 릴리스에서 받아요.
+RUNTIME_TAG="runtime-cx26.3.0-dxmt0.80"
+RUNTIME_NAME="azur-runtime-cx26.3.0-dxmt0.80"
+RUNTIME_URL="https://github.com/SELCORE/azur-promilia-launcher/releases/download/$RUNTIME_TAG/$RUNTIME_NAME.tar.xz"
+RUNTIME_SHA256="15866cf9ca94040535d8371c53ca2f1b6b9194e0de232d642c3dad069519b1cf"
 
 PLUG_URL="https://platform.nexon.com/NexonPlug/Install/InstallData/65538.z00"
 NGM_URL="https://platform.nexon.com/NGM/Bin"
 UA="Mozilla/5.0"
 # Wine에서는 Chromium 계열(넥슨 플러그, WebView2) 화면의 GPU 렌더링이 검게 나와서 소프트웨어 렌더링을 써요.
 GL_FLAGS="--use-gl=swiftshader --use-angle=swiftshader --in-process-gpu"
-DXMT_DLLS="d3d10core.dll d3d11.dll dxgi.dll"
 
 say()  { printf '\n==> %s\n' "$*"; }
 warn() { printf '주의: %s\n' "$*" >&2; }
 die()  { printf '오류: %s\n' "$*" >&2; exit 1; }
 
-w() {
-  WINEPREFIX="$PREFIX" WINEDEBUG="${WINEDEBUG:--all}" WINEMSYNC=1 WINEESYNC=1 \
-    DXMT_LOG_PATH="$LOG_DIR" "$WINE_DIR/bin/wine" "$@"
+wine_env() { # 런타임에 넣어 둔 FreeType, GnuTLS 등을 Wine이 찾도록 해요
+  env WINEPREFIX="$PREFIX" WINEDEBUG="${WINEDEBUG:--all}" WINEMSYNC=1 WINEESYNC=1 \
+    DXMT_LOG_PATH="$LOG_DIR" DYLD_FALLBACK_LIBRARY_PATH="$WINE_DIR/lib:/usr/lib" "$@"
 }
-wserver() { WINEPREFIX="$PREFIX" "$WINE_DIR/bin/wineserver" "$@"; }
+w() { wine_env "$WINE_DIR/bin/wine" "$@"; }
+wserver() { wine_env "$WINE_DIR/bin/wineserver" "$@"; }
 reg_add() { w reg add "$@" /f >/dev/null 2>&1 || die "레지스트리 설정 실패: $*"; }
-need_wine()   { [ -x "$WINE_DIR/bin/wine" ] || die "Wine이 없어요. 먼저 ./azurctl.sh install-wine"; }
+need_wine()   { [ -x "$WINE_DIR/bin/wine" ] || die "Wine이 없어요. 먼저 ./azurctl.sh install-runtime"; }
 need_prefix() { need_wine; [ -d "$DRIVE_C" ] || die "Wine 환경이 없어요. 먼저 ./azurctl.sh init-prefix"; }
 running_in_prefix() { w tasklist 2>/dev/null | grep -qiE "^($1)\.exe"; }
 
@@ -58,53 +57,25 @@ fetch() { # url dest  (터미널이면 진행 막대, 앱에서 돌 때는 조�
 
 sha_of() { shasum -a 256 "$1" | awk '{print $1}'; }
 
-cmd_install_wine() { # [--from <wine dir>]
+cmd_install_runtime() { # [--from <런타임 tar.xz>]  Wine + DXMT 런타임 설치
   mkdir -p "$APP_HOME"
-  rm -rf "$WINE_DIR.new"
+  local tmp; tmp="$(mktemp -d)"
   if [ "${1:-}" = "--from" ]; then
-    [ -x "$2/bin/wine" ] || die "Wine 폴더가 아니에요: $2"
-    cp -cR "$2" "$WINE_DIR.new" 2>/dev/null || cp -R "$2" "$WINE_DIR.new"
+    cp "$2" "$tmp/runtime.tar.xz"
   else
-    local tmp; tmp="$(mktemp -d)"
-    fetch "$WINE_URL" "$tmp/wine.tar.xz"
-    echo "$WINE_SHA256  $tmp/wine.tar.xz" | shasum -a 256 -c - >/dev/null || die "Wine 파일 체크섬이 맞지 않아요."
-    mkdir -p "$tmp/x" && tar -xJf "$tmp/wine.tar.xz" -C "$tmp/x"
-    local found; found="$(dirname "$(dirname "$(find "$tmp/x" -path '*/bin/wineserver' -type f | head -1)")")"
-    [ -x "$found/bin/wine" ] || die "압축 안에서 Wine을 찾지 못했어요."
-    mv "$found" "$WINE_DIR.new"; rm -rf "$tmp"
+    fetch "$RUNTIME_URL" "$tmp/runtime.tar.xz"
+    [ "$(sha_of "$tmp/runtime.tar.xz")" = "$RUNTIME_SHA256" ] || { rm -rf "$tmp"; die "런타임 파일 체크섬이 맞지 않아요."; }
   fi
-  xattr -dr com.apple.quarantine "$WINE_DIR.new" 2>/dev/null || true
-  rm -rf "$WINE_DIR"; mv "$WINE_DIR.new" "$WINE_DIR"
-  echo "Wine: $("$WINE_DIR/bin/wine" --version)"
+  mkdir -p "$tmp/x" && tar -xJf "$tmp/runtime.tar.xz" -C "$tmp/x"
+  [ -x "$tmp/x/wine/bin/wine" ] && [ -f "$tmp/x/wine/lib/wine/x86_64-unix/winemetal.so" ] \
+    || { rm -rf "$tmp"; die "런타임 압축 안에 Wine이나 DXMT가 없어요."; }
+  xattr -dr com.apple.quarantine "$tmp/x/wine" 2>/dev/null || true
+  rm -rf "$WINE_DIR"; mv "$tmp/x/wine" "$WINE_DIR"; rm -rf "$tmp"
+  echo "$RUNTIME_NAME" > "$WINE_DIR/.azur-runtime"   # 어떤 런타임인지 기록 (바뀌면 다시 받아요)
+  echo "Wine: $(w --version 2>/dev/null) + DXMT"
 }
 
-cmd_install_dxmt() { # [--from <folder with d3d11.dll dxgi.dll ... winemetal.so>]
-  need_wine
-  local src tmp=""
-  if [ "${1:-}" = "--from" ]; then
-    src="$2"
-  else
-    tmp="$(mktemp -d)"
-    fetch "$DXMT_URL" "$tmp/dxmt.zip"
-    (cd "$tmp" && unzip -q dxmt.zip && tar -xzf "dxmt-$DXMT_COMMIT.tar.gz")
-    src="$tmp/flat"; mkdir -p "$src"
-    cp "$tmp/$DXMT_COMMIT/x86_64-windows/"* "$tmp/$DXMT_COMMIT/x86_64-unix/"* "$src/"
-  fi
-  local win="$WINE_DIR/lib/wine/x86_64-windows" unix="$WINE_DIR/lib/wine/x86_64-unix"
-  for f in $DXMT_DLLS winemetal.dll winemetal.so; do [ -f "$src/$f" ] || die "DXMT 파일이 없어요: $src/$f"; done
-  # 테스트한 DXMT 빌드와 같은 파일인지 확인해요 (다른 빌드면 Wine과 맞지 않아 튕길 수 있어요).
-  [ "$(sha_of "$src/d3d11.dll")" = "$DXMT_D3D11_SHA256" ] && [ "$(sha_of "$src/winemetal.so")" = "$DXMT_WINEMETAL_SHA256" ] \
-    || { [ -n "$tmp" ] && rm -rf "$tmp"; die "DXMT 파일 체크섬이 맞지 않아요 (테스트한 $DXMT_COMMIT 빌드가 아니에요)."; }
-  for f in $DXMT_DLLS; do
-    [ -f "$win/$f.wined3d" ] || cp "$win/$f" "$win/$f.wined3d"   # 원래 Wine 파일 보관
-    cp "$src/$f" "$win/$f"
-  done
-  cp "$src/winemetal.dll" "$win/winemetal.dll"
-  cp "$src/winemetal.so" "$unix/winemetal.so"
-  if [ -d "$DRIVE_C/windows/system32" ]; then cp "$src/winemetal.dll" "$DRIVE_C/windows/system32/winemetal.dll"; fi
-  [ -n "$tmp" ] && rm -rf "$tmp"
-  echo "DXMT 설치 완료"
-}
+runtime_current() { [ -x "$WINE_DIR/bin/wine" ] && [ "$(cat "$WINE_DIR/.azur-runtime" 2>/dev/null)" = "$RUNTIME_NAME" ]; }
 
 cmd_init_prefix() {
   need_wine
@@ -257,6 +228,7 @@ cmd_plug() {
   mkdir -p "$LOG_DIR"
   # shellcheck disable=SC2086
   nohup env WINEPREFIX="$PREFIX" WINEDEBUG="${WINEDEBUG:--all}" WINEMSYNC=1 WINEESYNC=1 DXMT_LOG_PATH="$LOG_DIR" \
+    DYLD_FALLBACK_LIBRARY_PATH="$WINE_DIR/lib:/usr/lib" \
     "$WINE_DIR/bin/wine" 'C:\Nexon\NexonPlug\NexonPlug.exe' $GL_FLAGS >"$LOG_DIR/nexonplug.log" 2>&1 &
   echo "넥슨 플러그를 켰어요."
 }
@@ -273,8 +245,8 @@ cmd_shell()   { need_prefix; echo "WINEPREFIX=$PREFIX  wine=$WINE_DIR/bin/wine";
 
 cmd_status() {
   printf '%-14s %s\n' "앱 폴더" "$APP_HOME"
-  printf '%-14s %s\n' "Wine" "$([ -x "$WINE_DIR/bin/wine" ] && "$WINE_DIR/bin/wine" --version || echo 없음)"
-  printf '%-14s %s\n' "DXMT" "$([ -f "$WINE_DIR/lib/wine/x86_64-unix/winemetal.so" ] && [ -f "$WINE_DIR/lib/wine/x86_64-windows/d3d11.dll.wined3d" ] && echo 설치됨 || echo 없음)"
+  printf '%-14s %s\n' "Wine" "$([ -x "$WINE_DIR/bin/wine" ] && w --version 2>/dev/null || echo 없음)"
+  printf '%-14s %s\n' "DXMT" "$([ -f "$WINE_DIR/lib/wine/x86_64-unix/winemetal.so" ] && echo 설치됨 || echo 없음)"
   printf '%-14s %s\n' "Wine 환경" "$([ -d "$DRIVE_C" ] && echo 있음 || echo 없음)"
   printf '%-14s %s\n' "WebView2" "$([ -d "$DRIVE_C/Program Files (x86)/Microsoft/EdgeWebView/Application" ] && echo 있음 || echo 없음)"
   printf '%-14s %s\n' "넥슨 플러그" "$([ -f "$DRIVE_C/Nexon/NexonPlug/NexonPlug.exe" ] && echo 있음 || echo 없음)"
@@ -283,7 +255,7 @@ cmd_status() {
 }
 
 cmd_status_code() { # 앱이 쓰는 한 단어 상태: ready | setup
-  if [ -x "$WINE_DIR/bin/wine" ] && [ -f "$WINE_DIR/lib/wine/x86_64-windows/d3d11.dll.wined3d" ] \
+  if runtime_current \
      && [ -f "$DRIVE_C/Nexon/NexonPlug/NexonPlug.exe" ] && [ -f "$DRIVE_C/ProgramData/Nexon/NGM/NGM64.exe" ]; then
     echo ready
   else
@@ -292,24 +264,9 @@ cmd_status_code() { # 앱이 쓰는 한 단어 상태: ready | setup
 }
 
 # 이 맥에 이미 있는 재료를 찾아서 setup 옵션으로 출력해요 (다운로드를 줄이려고).
-#  - Yaagl이 받아 둔 같은 Wine 빌드와 같은 DXMT 빌드
 #  - CrossOver "Azur Promilia" 보틀의 WebView2 런타임과 이미 받은 게임
 cmd_detect_sources() {
-  local d wine_src="" dxmt_src="" out=""
-  for d in "$HOME/Library/Application Support/"Yaagl*; do
-    [ -d "$d" ] || continue
-    if [ -z "$wine_src" ] && [ -x "$d/wine/bin/wine" ] \
-       && grep -q '11.0-1-crossover-signed-experimental' "$d/.storage/wine_tag.neustorage" 2>/dev/null; then
-      wine_src="$d/wine"
-    fi
-    if [ -z "$dxmt_src" ] && [ -f "$d/dxmt/d3d11.dll" ] && [ -f "$d/dxmt/winemetal.so" ] \
-       && [ "$(shasum -a 256 "$d/dxmt/d3d11.dll" | awk '{print $1}')" = "$DXMT_D3D11_SHA256" ]; then
-      dxmt_src="$d/dxmt"
-    fi
-  done
-  local b="$HOME/Library/Application Support/CrossOver/Bottles/Azur Promilia/drive_c"
-  [ -n "$wine_src" ] && out+="--wine-from $(printf '%q' "$wine_src") "
-  [ -n "$dxmt_src" ] && out+="--dxmt-from $(printf '%q' "$dxmt_src") "
+  local b="$HOME/Library/Application Support/CrossOver/Bottles/Azur Promilia/drive_c" out=""
   if [ -d "$b/Program Files (x86)/Microsoft/EdgeWebView/Application" ]; then
     out+="--webview2-from $(printf '%q' "$b/Program Files (x86)/Microsoft/EdgeWebView") "
   fi
@@ -319,34 +276,30 @@ cmd_detect_sources() {
   echo "$out"
 }
 
-cmd_setup() { # [--wine-from DIR] [--dxmt-from DIR] [--webview2-from DIR] [--import-crossover BOTTLE]
-  local wine_from="" dxmt_from="" wv2_from="" import_bottle=""
+cmd_setup() { # [--runtime-from TAR.XZ] [--webview2-from DIR] [--import-crossover BOTTLE]
+  local runtime_from="" wv2_from="" import_bottle=""
   while [ $# -gt 0 ]; do
     case "$1" in
-      --wine-from) wine_from="$2"; shift 2 ;;
-      --dxmt-from) dxmt_from="$2"; shift 2 ;;
+      --runtime-from) runtime_from="$2"; shift 2 ;;
       --webview2-from) wv2_from="$2"; shift 2 ;;
       --import-crossover) import_bottle="$2"; shift 2 ;;
       *) die "알 수 없는 옵션: $1" ;;
     esac
   done
   command -v python3 >/dev/null || die "python3가 필요해요. 터미널에서 xcode-select --install"
-  if [ ! -x "$WINE_DIR/bin/wine" ]; then
-    say "1/7 Wine 설치"
-    if [ -n "$wine_from" ]; then cmd_install_wine --from "$wine_from"; else cmd_install_wine; fi
+  if ! runtime_current; then
+    say "1/6 Wine + DXMT 런타임 설치 ($RUNTIME_NAME)"
+    [ -d "$PREFIX" ] && wserver -k 2>/dev/null || true   # 예전 Wine이 돌고 있으면 먼저 종료
+    if [ -n "$runtime_from" ]; then cmd_install_runtime --from "$runtime_from"; else cmd_install_runtime; fi
   fi
-  if [ ! -f "$WINE_DIR/lib/wine/x86_64-windows/d3d11.dll.wined3d" ]; then
-    say "2/7 DXMT 설치"
-    if [ -n "$dxmt_from" ]; then cmd_install_dxmt --from "$dxmt_from"; else cmd_install_dxmt; fi
-  fi
-  say "3/7 Wine 환경 준비"; cmd_init_prefix
+  say "2/6 Wine 환경 준비"; cmd_init_prefix
   if [ -z "$(webview2_version)" ]; then
-    say "4/7 WebView2 런타임 (NGM에 필요)"
+    say "3/6 WebView2 런타임 (NGM에 필요)"
     if [ -n "$wv2_from" ]; then cmd_install_webview2 --from "$wv2_from"; else cmd_install_webview2; fi
   fi
-  say "5/7 넥슨 플러그 설치"; cmd_install_plug
-  say "6/7 NGM 설치"; cmd_install_ngm
-  say "7/7 호환 설정"; cmd_configure
+  say "4/6 넥슨 플러그 설치"; cmd_install_plug
+  say "5/6 NGM 설치"; cmd_install_ngm
+  say "6/6 호환 설정"; cmd_configure
   if [ -n "$import_bottle" ] && [ ! -e "$DRIVE_C/Nexon/AzurPromilia" ]; then
     say "CrossOver에 받아 둔 게임 가져오기"; cmd_import_crossover "$import_bottle"
   fi
@@ -356,7 +309,7 @@ cmd_setup() { # [--wine-from DIR] [--dxmt-from DIR] [--webview2-from DIR] [--imp
 
 sub="${1:-status}"; shift || true
 case "$sub" in
-  setup|install-wine|install-dxmt|init-prefix|install-webview2|install-plug|install-ngm|configure|link-game|import-crossover|plug|game-direct|stop|status|status-code|detect-sources|winecfg|shell)
+  setup|install-runtime|init-prefix|install-webview2|install-plug|install-ngm|configure|link-game|import-crossover|plug|game-direct|stop|status|status-code|detect-sources|winecfg|shell)
     "cmd_${sub//-/_}" "$@" ;;
   *) sed -n '2,12p' "$0"; exit 1 ;;
 esac
