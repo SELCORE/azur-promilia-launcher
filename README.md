@@ -10,6 +10,7 @@ CrossOver 없이 무료 Wine과 DXMT로 넥슨 플러그와 아주르 프로밀�
 
 | 항목 | 결과 |
 |---|---|
+| Wine·DXMT 자동 다운로드 (GitHub, 체크섬 확인) | 됨 |
 | 넥슨 플러그 화면 표시, 로그인 | 됨 |
 | CrossOver에 받아 둔 게임을 "설치 완료"로 인식 | 됨 (다시 받지 않고 연결) |
 | 게임 실행 파일: DXMT 그래픽, 넥슨 보안(NGS-X) 초기화 | 됨: 7번 중 5번. 나머지 2번은 DXMT 초기화 중 튕김 (아래 알려진 문제) |
@@ -22,6 +23,16 @@ CrossOver 없이 무료 Wine과 DXMT로 넥슨 플러그와 아주르 프로밀�
 
 ## 쓰는 법
 
+### 앱 받아서 쓰기 (쉬운 방법)
+
+1. [Releases](https://github.com/SELCORE/azur-promilia-launcher/releases/latest)에서 `Azur-Promilia-Launcher.zip`을 받아 압축을 풀어요.
+2. `Azur Promilia Launcher.app`을 응용 프로그램 폴더로 옮겨요.
+3. 앱을 열어요. 처음에는 Apple 인증이 없는 앱이라 열리지 않아요.
+   - **시스템 설정 > 개인정보 보호 및 보안**에서 맨 아래 **그래도 열기**를 누르세요.
+   - 한 번만 하면 돼요.
+
+### 직접 빌드하기
+
 ```bash
 git clone https://github.com/SELCORE/azur-promilia-launcher.git
 cd azur-promilia-launcher
@@ -29,10 +40,13 @@ cd azur-promilia-launcher
 open "dist/Azur Promilia Launcher.app"
 ```
 
-**처음 실행하면** 확인 창이 뜨고 준비를 시작해요. 몇 분 걸려요.
+### 처음 실행하면
 
-1. 무료 Wine과 DXMT를 받아요.
-   - 이 맥에 Yaagl이 받아 둔 같은 버전이 있으면 그걸 복사해서 써요.
+확인 창이 뜨고 준비를 시작해요. 인터넷 속도에 따라 몇 분 걸려요.
+
+1. 무료 Wine(약 435MB)과 DXMT(약 31MB)를 GitHub에서 자동으로 받아요.
+   - 받은 파일은 체크섬으로 테스트한 빌드와 같은지 확인해요.
+   - 이 맥에 Yaagl이 받아 둔 같은 버전이 있으면 받지 않고 그걸 복사해서 써요.
 2. 넥슨 공식 서버에서 넥슨 플러그와 NGM을 받아요.
 3. 검은 화면 방지와 창 설정을 적용해요.
 4. CrossOver의 `Azur Promilia` 보틀이 있으면 거기서 WebView2 런타임을 복사하고, 받아 둔 게임을 다시 받지 않고 연결해요.

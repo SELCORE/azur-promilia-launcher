@@ -23,6 +23,8 @@ WINE_URL="https://github.com/yaagl/anime-game-wine/releases/download/wine-crosso
 WINE_SHA256="89fa7e90fb626523a90d5867a03c6be785d017176739c6320a3b86c7838c3a35"
 DXMT_URL="https://github.com/yaagl/anime-game-wine/releases/download/dxmt-654f547/dxmt-654f547ffab4e0c395ee368aad52bb4586b04576.zip"
 DXMT_COMMIT="654f547ffab4e0c395ee368aad52bb4586b04576"
+DXMT_D3D11_SHA256="fbb95116abaf69a55495fcffc8956bcfbe2b815f3862e44a01d18329bf668739"
+DXMT_WINEMETAL_SHA256="2d6966b5b445c781eff2d2b180208a8c5c0679b147f6d963180f28b11520bcdd"
 
 PLUG_URL="https://platform.nexon.com/NexonPlug/Install/InstallData/65538.z00"
 NGM_URL="https://platform.nexon.com/NGM/Bin"
@@ -45,10 +47,16 @@ need_wine()   { [ -x "$WINE_DIR/bin/wine" ] || die "Wine이 없어요. 먼저 ./
 need_prefix() { need_wine; [ -d "$DRIVE_C" ] || die "Wine 환경이 없어요. 먼저 ./azurctl.sh init-prefix"; }
 running_in_prefix() { w tasklist 2>/dev/null | grep -qiE "^($1)\.exe"; }
 
-fetch() { # url dest
+fetch() { # url dest  (터미널이면 진행 막대, 앱에서 돌 때는 조용히)
   echo "받는 중: $1"
-  curl -fL -# --retry 3 -A "$UA" -o "$2" "$1"
+  if [ -t 2 ]; then
+    curl -fL -# --retry 3 -A "$UA" -o "$2" "$1"
+  else
+    curl -fsSL --retry 3 -A "$UA" -o "$2" "$1"
+  fi
 }
+
+sha_of() { shasum -a 256 "$1" | awk '{print $1}'; }
 
 cmd_install_wine() { # [--from <wine dir>]
   mkdir -p "$APP_HOME"
@@ -84,6 +92,9 @@ cmd_install_dxmt() { # [--from <folder with d3d11.dll dxgi.dll ... winemetal.so>
   fi
   local win="$WINE_DIR/lib/wine/x86_64-windows" unix="$WINE_DIR/lib/wine/x86_64-unix"
   for f in $DXMT_DLLS winemetal.dll winemetal.so; do [ -f "$src/$f" ] || die "DXMT 파일이 없어요: $src/$f"; done
+  # 테스트한 DXMT 빌드와 같은 파일인지 확인해요 (다른 빌드면 Wine과 맞지 않아 튕길 수 있어요).
+  [ "$(sha_of "$src/d3d11.dll")" = "$DXMT_D3D11_SHA256" ] && [ "$(sha_of "$src/winemetal.so")" = "$DXMT_WINEMETAL_SHA256" ] \
+    || { [ -n "$tmp" ] && rm -rf "$tmp"; die "DXMT 파일 체크섬이 맞지 않아요 (테스트한 $DXMT_COMMIT 빌드가 아니에요)."; }
   for f in $DXMT_DLLS; do
     [ -f "$win/$f.wined3d" ] || cp "$win/$f" "$win/$f.wined3d"   # 원래 Wine 파일 보관
     cp "$src/$f" "$win/$f"
@@ -245,7 +256,6 @@ cmd_status_code() { # 앱이 쓰는 한 단어 상태: ready | setup
 # 이 맥에 이미 있는 재료를 찾아서 setup 옵션으로 출력해요 (다운로드를 줄이려고).
 #  - Yaagl이 받아 둔 같은 Wine 빌드와 같은 DXMT 빌드
 #  - CrossOver "Azur Promilia" 보틀의 WebView2 런타임과 이미 받은 게임
-DXMT_D3D11_SHA256="fbb95116abaf69a55495fcffc8956bcfbe2b815f3862e44a01d18329bf668739"
 cmd_detect_sources() {
   local d wine_src="" dxmt_src="" out=""
   for d in "$HOME/Library/Application Support/"Yaagl*; do
