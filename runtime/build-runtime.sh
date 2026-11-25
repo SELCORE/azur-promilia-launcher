@@ -7,8 +7,9 @@
 #   - Wine is built for x86_64 (it runs under Rosetta 2), with WoW64 so 32-bit Windows
 #     programs (for example Nexon's NGService.exe) work too.
 #   - Build tools (bison, mingw-w64) come from the native Homebrew in /opt/homebrew.
-#   - Libraries Wine links at run time (FreeType, GnuTLS, ...) must be x86_64, so they come
-#     from a second, x86_64 Homebrew in /usr/local. `deps` installs it (needs sudo once).
+#   - Libraries Wine loads at run time (FreeType, GnuTLS and what GnuTLS needs) must be x86_64.
+#     Homebrew no longer installs x86_64 packages on Apple Silicon, so `deps` builds them from
+#     their official source releases into $WORK/x86.
 #
 # Usage: runtime/build-runtime.sh deps|fetch|configure|build|bundle|package|all
 # Env:   CX_VER (default 26.3.0), DXMT_VER (default v0.80), WORK (default ./runtime-work), JOBS
@@ -22,29 +23,59 @@ JOBS="${JOBS:-$(sysctl -n hw.ncpu)}"
 SRC_URL="https://media.codeweavers.com/pub/crossover/source/crossover-sources-${CX_VER}.tar.gz"
 DXMT_URL="https://github.com/3Shain/dxmt/releases/download/${DXMT_VER}/dxmt-${DXMT_VER}-builtin.tar.gz"
 ARM_BREW=/opt/homebrew/bin/brew
-X86_BREW=/usr/local/bin/brew
 SRC="$WORK/wine-src"
 BLD="$WORK/wine-build"
 DIST="$WORK/dist/wine"
+X86="$WORK/x86"          # x86_64 libraries built from source
 export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-13.0}"
 
 say() { printf '\n==> %s\n' "$*"; }
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 
-# x86_64 libraries Wine dlopens (FreeType for fonts, GnuTLS for HTTPS/schannel, SDL2 for gamepads).
-X86_LIBS="freetype gnutls sdl2"
+# Official source releases of the x86_64 libraries (name|url|sha256 checked after download is printed)
+LIB_SOURCES="
+gmp|https://ftp.gnu.org/gnu/gmp/gmp-6.3.0.tar.xz
+nettle|https://ftp.gnu.org/gnu/nettle/nettle-3.10.1.tar.gz
+gnutls|https://www.gnupg.org/ftp/gcrypt/gnutls/v3.8/gnutls-3.8.9.tar.xz
+freetype|https://download.savannah.gnu.org/releases/freetype/freetype-2.13.3.tar.xz
+"
+
+x86_env() {
+  export CC="clang -arch x86_64" CXX="clang++ -arch x86_64" OBJC="clang -arch x86_64"
+  export CPPFLAGS="-I$X86/include" LDFLAGS="-L$X86/lib"
+  export PKG_CONFIG_LIBDIR="$X86/lib/pkgconfig" PKG_CONFIG_PATH=""
+}
+
+build_lib() { # name  (configure args follow)
+  local name="$1"; shift
+  local url; url="$(printf '%s\n' "$LIB_SOURCES" | awk -F'|' -v n="$name" '$1==n{print $2}')"
+  local tarball="$WORK/dl/${url##*/}" dir="$WORK/libsrc/$name"
+  [ -f "$X86/.done-$name" ] && { echo "$name: already built"; return 0; }
+  mkdir -p "$WORK/dl" "$WORK/libsrc"
+  [ -f "$tarball" ] || curl -fL --retry 3 -o "$tarball" "$url"
+  echo "$name source sha256: $(shasum -a 256 "$tarball" | cut -d' ' -f1)"
+  rm -rf "$dir"; mkdir -p "$dir"; tar -xf "$tarball" -C "$dir" --strip-components 1
+  say "Building $name (x86_64)"
+  ( cd "$dir" && x86_env \
+    && ./configure --prefix="$X86" --build=x86_64-apple-darwin --host=x86_64-apple-darwin \
+         --enable-shared --disable-static "$@" > "$WORK/lib-$name.log" 2>&1 \
+    && make -j"$JOBS" >> "$WORK/lib-$name.log" 2>&1 \
+    && make install >> "$WORK/lib-$name.log" 2>&1 ) || { tail -40 "$WORK/lib-$name.log"; die "$name build failed"; }
+  touch "$X86/.done-$name"
+}
 
 cmd_deps() {
   say "Build tools (native Homebrew)"
   "$ARM_BREW" install bison flex mingw-w64 pkgconf
-  if [ ! -x "$X86_BREW" ]; then
-    say "Installing an x86_64 Homebrew in /usr/local (for x86_64 libraries)"
-    /usr/sbin/softwareupdate --install-rosetta --agree-to-license >/dev/null 2>&1 || true
-    arch -x86_64 /bin/bash -c "NONINTERACTIVE=1 $(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-  fi
-  say "x86_64 libraries: $X86_LIBS"
-  # shellcheck disable=SC2086
-  arch -x86_64 "$X86_BREW" install $X86_LIBS
+  /usr/sbin/softwareupdate --install-rosetta --agree-to-license >/dev/null 2>&1 || true
+  mkdir -p "$X86"
+  build_lib gmp --disable-assembly
+  build_lib nettle --disable-documentation --disable-openssl
+  build_lib gnutls --with-included-libtasn1 --with-included-unistring --without-p11-kit \
+    --without-idn --without-brotli --without-zstd --without-tpm --without-tpm2 --without-zlib \
+    --disable-doc --disable-tools --disable-tests --disable-cxx --disable-nls --disable-guile
+  build_lib freetype --without-harfbuzz --without-png --without-bzip2 --without-brotli --with-zlib
+  ls "$X86/lib"/*.dylib
 }
 
 cmd_fetch() {
@@ -61,11 +92,8 @@ cmd_fetch() {
 
 configure_env() {
   export PATH="$(dirname "$ARM_BREW")/../opt/bison/bin:$(dirname "$ARM_BREW")/../opt/flex/bin:$(dirname "$ARM_BREW"):$PATH"
-  # Only the x86_64 libraries may be found, never the arm64 ones in /opt/homebrew.
-  export PKG_CONFIG_LIBDIR="/usr/local/lib/pkgconfig:/usr/local/share/pkgconfig"
-  export PKG_CONFIG_PATH=""
-  export CC="clang -arch x86_64" CXX="clang++ -arch x86_64" OBJC="clang -arch x86_64"
-  export CPPFLAGS="-I/usr/local/include" LDFLAGS="-L/usr/local/lib"
+  # Only our x86_64 libraries may be found, never the arm64 ones in /opt/homebrew.
+  x86_env
 }
 
 cmd_configure() {
@@ -78,7 +106,7 @@ cmd_configure() {
       --build=x86_64-apple-darwin --host=x86_64-apple-darwin \
       --enable-archs=i386,x86_64 \
       --disable-tests \
-      --with-freetype --with-gnutls --with-sdl --with-coreaudio \
+      --with-freetype --with-gnutls --with-coreaudio --without-sdl \
       --without-x --without-vulkan --without-gstreamer --without-krb5 --without-cups \
       --without-sane --without-gphoto --without-pcap --without-usb --without-v4l2 \
       --without-capi --without-netapi --without-opencl --without-oss --without-pulse \
@@ -98,7 +126,7 @@ cmd_build() {
   "$DIST/bin/wine" --version || true
 }
 
-# Copy a dylib and everything it links from /usr/local into lib/, pointing references at
+# Copy a dylib and everything it links from $X86 into lib/, pointing references at
 # @loader_path so the folder works wherever it is unpacked.
 bundle_one() {
   local src="$1" name dep
@@ -106,7 +134,7 @@ bundle_one() {
   [ -f "$DIST/lib/$name" ] && return 0
   cp -L "$src" "$DIST/lib/$name"; chmod u+w "$DIST/lib/$name"
   install_name_tool -id "@rpath/$name" "$DIST/lib/$name" 2>/dev/null
-  for dep in $(otool -L "$src" | awk 'NR>1 {print $1}' | grep -E '^/usr/local/'); do
+  for dep in $(otool -L "$src" | awk 'NR>1 {print $1}' | grep -F "$X86/"); do
     bundle_one "$(cd "$(dirname "$dep")" && pwd -P)/$(basename "$dep")"
     install_name_tool -change "$dep" "@loader_path/$(basename "$dep")" "$DIST/lib/$name" 2>/dev/null
   done
@@ -117,8 +145,9 @@ cmd_bundle() {
   say "Bundling x86_64 libraries"
   mkdir -p "$DIST/lib"
   local l
-  for l in libfreetype.6.dylib libgnutls.30.dylib libSDL2-2.0.0.dylib; do
-    [ -f "/usr/local/lib/$l" ] && bundle_one "/usr/local/lib/$l"
+  for l in libfreetype.6.dylib libgnutls.30.dylib; do
+    [ -f "$X86/lib/$l" ] || die "missing $X86/lib/$l"
+    bundle_one "$X86/lib/$l"
   done
   # Wine dlopens these by plain name; the launcher sets DYLD_FALLBACK_LIBRARY_PATH to lib/.
   find "$DIST/lib" -maxdepth 1 -name '*.dylib' -exec codesign --force --sign - {} \; 2>/dev/null
@@ -156,8 +185,9 @@ Wine:  CodeWeavers CrossOver ${CX_VER} source (LGPL-2.1-or-later), unmodified
        ${SRC_URL}
 DXMT:  ${DXMT_VER} by Feifan He for CodeWeavers (LGPL-2.1-or-later)
        https://github.com/3Shain/dxmt/tree/${DXMT_VER}
-Bundled libraries come from Homebrew (FreeType, GnuTLS and its dependencies, SDL2); their
-licenses and sources are listed at https://formulae.brew.sh
+Bundled libraries, built from their official source releases by the same script:
+$(printf '%s\n' "$LIB_SOURCES" | awk -F'|' 'NF==2{print "  "$1": "$2}')
+  (GMP, Nettle, GnuTLS: LGPL; FreeType: FreeType License)
 EOF
   say "Packing $name.tar.xz"
   (cd "$WORK/dist" && tar -cJf "$out/$name.tar.xz" wine)
