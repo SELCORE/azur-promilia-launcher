@@ -113,6 +113,10 @@ cmd_configure() {
       --without-udev --without-unwind --without-inotify --without-dbus --without-wayland \
     ) 2>&1 | tee "$WORK/configure.log" | tail -40
   [ -f "$BLD/Makefile" ] || die "configure failed (see $WORK/configure.log)"
+  # win32u still needs these names with --without-vulkan (Vulkan is only used if found at run time).
+  sed -i '' 's|/\* #undef SONAME_LIBVULKAN \*/|#define SONAME_LIBVULKAN "libvulkan.1.dylib"|' "$BLD/include/config.h"
+  sed -i '' 's|/\* #undef SONAME_LIBMOLTENVK \*/|#define SONAME_LIBMOLTENVK "libMoltenVK.dylib"|' "$BLD/include/config.h"
+  grep -E 'SONAME_LIB(VULKAN|MOLTENVK)' "$BLD/include/config.h"
   grep -E '^configure: (WARNING|error)' "$WORK/configure.log" || true
 }
 
