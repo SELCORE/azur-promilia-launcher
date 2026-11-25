@@ -120,20 +120,58 @@ cmd_init_prefix() {
   echo "Wine 환경: $PREFIX"
 }
 
-cmd_install_webview2() { # --from <EdgeWebView folder, e.g. a CrossOver bottle's "Program Files (x86)/Microsoft/EdgeWebView">
+WV2_APPGUID='{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
+WV2_BOOTSTRAP_URL="https://go.microsoft.com/fwlink/p/?LinkId=2124703"   # Microsoft 공식 WebView2 설치 프로그램
+webview2_version() {
+  ls "$DRIVE_C/Program Files (x86)/Microsoft/EdgeWebView/Application" 2>/dev/null \
+    | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | sort -t. -k1,1n -k2,2n -k3,3n -k4,4n | tail -1
+}
+webview2_freeze() {
+  # Wine에서 동작이 확인된 버전에 고정해요. 자동 업데이트로 최신 버전이 깔리면 NGM 화면이 안 뜰 수 있어요.
+  reg_add 'HKLM\Software\Policies\Microsoft\EdgeUpdate' /v "Update$WV2_APPGUID" /t REG_DWORD /d 0
+  reg_add 'HKLM\Software\Wow6432Node\Policies\Microsoft\EdgeUpdate' /v "Update$WV2_APPGUID" /t REG_DWORD /d 0
+  local s
+  for s in edgeupdate edgeupdatem; do
+    w reg query "HKLM\\System\\CurrentControlSet\\Services\\$s" >/dev/null 2>&1 \
+      && reg_add "HKLM\\System\\CurrentControlSet\\Services\\$s" /v Start /t REG_DWORD /d 4
+  done
+  return 0
+}
+
+cmd_install_webview2() { # [--from <EdgeWebView 폴더>]  WebView2 런타임 (NGM 설치 화면에 필요)
   need_prefix
-  [ "${1:-}" = "--from" ] || die "사용법: install-webview2 --from <EdgeWebView 폴더>"
-  local src="$2" ver
-  ver="$(ls "$src/Application" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)"
-  [ -n "$ver" ] || die "WebView2 런타임 버전 폴더를 찾지 못했어요: $src/Application"
-  local dest="$DRIVE_C/Program Files (x86)/Microsoft/EdgeWebView"
-  mkdir -p "$(dirname "$dest")"; rm -rf "$dest"
-  cp -cR "$src" "$dest" 2>/dev/null || cp -R "$src" "$dest"
-  local key='HKLM\Software\Wow6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
-  reg_add "$key" /v location /t REG_SZ /d 'C:\Program Files (x86)\Microsoft\EdgeWebView\Application'
-  reg_add "$key" /v name /t REG_SZ /d 'Microsoft Edge WebView2 Runtime'
-  reg_add "$key" /v pv /t REG_SZ /d "$ver"
-  echo "WebView2 런타임 $ver 설치 완료"
+  mkdir -p "$LOG_DIR"
+  local key="HKLM\\Software\\Wow6432Node\\Microsoft\\EdgeUpdate\\Clients\\$WV2_APPGUID" ver
+  if [ "${1:-}" = "--from" ]; then
+    local src="$2"
+    ver="$(ls "$src/Application" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | sort -t. -k1,1n -k2,2n -k3,3n -k4,4n | tail -1)"
+    [ -n "$ver" ] || die "WebView2 런타임 버전 폴더를 찾지 못했어요: $src/Application"
+    local dest="$DRIVE_C/Program Files (x86)/Microsoft/EdgeWebView"
+    mkdir -p "$(dirname "$dest")"; rm -rf "$dest"
+    cp -cR "$src" "$dest" 2>/dev/null || cp -R "$src" "$dest"
+    reg_add "$key" /v location /t REG_SZ /d 'C:\Program Files (x86)\Microsoft\EdgeWebView\Application'
+    reg_add "$key" /v name /t REG_SZ /d 'Microsoft Edge WebView2 Runtime'
+    reg_add "$key" /v pv /t REG_SZ /d "$ver"
+  elif [ -z "$(webview2_version)" ]; then
+    # 최신 WebView2는 Wine에서 잘 돌지 않아요. 설치하는 동안만 Windows 7로 인식시키면
+    # Microsoft가 Windows 7용 마지막 버전(109)을 줘요. CrossOver 보틀에도 이 버전이 깔려 있어요.
+    fetch "$WV2_BOOTSTRAP_URL" "$DRIVE_C/windows/temp/MicrosoftEdgeWebview2Setup.exe"
+    reg_add 'HKCU\Software\Wine' /v Version /t REG_SZ /d win7
+    echo "WebView2 설치 중 (Microsoft 서버에서 약 150MB를 받아요)"
+    w 'C:\windows\temp\MicrosoftEdgeWebview2Setup.exe' /silent /install >"$LOG_DIR/webview2-install.log" 2>&1 || true
+    local i=0
+    until w reg query "$key" /v pv >/dev/null 2>&1 && [ -n "$(webview2_version)" ]; do
+      i=$((i + 1)); [ "$i" -gt 120 ] && break; sleep 5   # 최대 10분
+    done
+    sleep 5
+    wserver -k 2>/dev/null || true   # 설치 프로그램과 업데이트 도우미 종료
+    reg_add 'HKCU\Software\Wine' /v Version /t REG_SZ /d win11
+    rm -f "$DRIVE_C/windows/temp/MicrosoftEdgeWebview2Setup.exe"
+  fi
+  ver="$(webview2_version)"
+  [ -n "$ver" ] || die "WebView2 런타임을 설치하지 못했어요. 기록: $LOG_DIR/webview2-install.log"
+  webview2_freeze
+  echo "WebView2 런타임 $ver 준비 완료"
 }
 
 cmd_install_plug() { # [--zip <65538.z00>]
@@ -302,9 +340,9 @@ cmd_setup() { # [--wine-from DIR] [--dxmt-from DIR] [--webview2-from DIR] [--imp
     if [ -n "$dxmt_from" ]; then cmd_install_dxmt --from "$dxmt_from"; else cmd_install_dxmt; fi
   fi
   say "3/7 Wine 환경 준비"; cmd_init_prefix
-  if [ ! -d "$DRIVE_C/Program Files (x86)/Microsoft/EdgeWebView/Application" ]; then
-    if [ -n "$wv2_from" ]; then say "4/7 WebView2 런타임"; cmd_install_webview2 --from "$wv2_from"
-    else warn "WebView2 런타임이 없어요. NGM(설치 화면)에 필요해요. README의 'WebView2' 항목을 참고하세요."; fi
+  if [ -z "$(webview2_version)" ]; then
+    say "4/7 WebView2 런타임 (NGM에 필요)"
+    if [ -n "$wv2_from" ]; then cmd_install_webview2 --from "$wv2_from"; else cmd_install_webview2; fi
   fi
   say "5/7 넥슨 플러그 설치"; cmd_install_plug
   say "6/7 NGM 설치"; cmd_install_ngm
