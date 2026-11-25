@@ -1,0 +1,88 @@
+name: build-runtime
+
+# Builds the launcher's Wine runtime from CodeWeavers' CrossOver source + upstream DXMT.
+# Run it from the Actions tab. If "release_tag" is set, the tarball is attached to that release.
+
+on:
+  workflow_dispatch:
+    inputs:
+      cx_version:
+        description: CrossOver source version
+        default: "26.3.0"
+        type: string
+      dxmt_version:
+        description: DXMT release tag (github.com/3Shain/dxmt)
+        default: "v0.80"
+        type: string
+      runner:
+        description: macOS runner image
+        default: "macos-26"
+        type: string
+      release_tag:
+        description: Attach the result to this release tag (blank = artifact only)
+        default: ""
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 240
+    env:
+      CX_VER: ${{ inputs.cx_version }}
+      DXMT_VER: ${{ inputs.dxmt_version }}
+      WORK: ${{ github.workspace }}/runtime-work
+      HOMEBREW_NO_INSTALL_CLEANUP: "1"
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Environment
+        run: |
+          sw_vers; uname -m; sysctl -n hw.ncpu; xcodebuild -version || true
+
+      - name: Dependencies
+        run: runtime/build-runtime.sh deps
+
+      - name: Fetch CrossOver source
+        run: runtime/build-runtime.sh fetch
+
+      - name: Configure
+        run: runtime/build-runtime.sh configure
+
+      - name: Build
+        run: runtime/build-runtime.sh build
+
+      - name: Bundle libraries and DXMT
+        run: runtime/build-runtime.sh bundle
+
+      - name: Package
+        run: runtime/build-runtime.sh package
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs
+          path: |
+            runtime-work/*.log
+            runtime-work/wine-build/config.log
+          if-no-files-found: ignore
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: azur-runtime
+          path: runtime-work/out/*
+          compression-level: 0
+
+      - name: Attach to release
+        if: inputs.release_tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "${{ inputs.release_tag }}" >/dev/null 2>&1 || \
+            gh release create "${{ inputs.release_tag }}" --prerelease --title "${{ inputs.release_tag }}" --notes "Wine runtime built from CrossOver ${CX_VER} source + DXMT ${DXMT_VER}. See SOURCES.txt inside the tarball."
+          gh release upload "${{ inputs.release_tag }}" runtime-work/out/* --clobber

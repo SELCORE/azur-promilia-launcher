@@ -1,9 +1,10 @@
+*.dll
+*.exe
+*.log
+*.so
+*.tar.*
+*.z00
+*.zip
 .DS_Store
 dist/
-*.log
-*.exe
-*.dll
-*.so
-*.zip
-*.z00
-*.tar.*
+runtime-work/
