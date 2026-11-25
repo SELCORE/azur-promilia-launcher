@@ -25,7 +25,7 @@ CrossOver 없이 무료 Wine과 DXMT로 넥슨 플러그와 아주르 프로밀�
 
 ### 앱 받아서 쓰기 (쉬운 방법)
 
-1. [Releases](https://github.com/SELCORE/azur-promilia-launcher/releases/latest)에서 `Azur-Promilia-Launcher.zip`을 받아 압축을 풀어요.
+1. [Releases](https://github.com/SELCORE/azur-promilia-launcher/releases)에서 `Azur-Promilia-Launcher.zip`을 받아 압축을 풀어요.
 2. `Azur Promilia Launcher.app`을 응용 프로그램 폴더로 옮겨요.
 3. 앱을 열어요. 처음에는 Apple 인증이 없는 앱이라 열리지 않아요.
    - **시스템 설정 > 개인정보 보호 및 보안**에서 맨 아래 **그래도 열기**를 누르세요.
