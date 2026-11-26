@@ -329,34 +329,88 @@ cmd_set() { # key value
 }
 yn() { [ "$1" = 1 ] && echo y || echo n; }
 
-disable_nexon_launcher_service() {
-  # NGM은 게임을 켤 때 "Nexon Launcher" 서비스를 설치하고 시작을 시도해요. Wine에서는 이 서비스가
-  # 끝내 시작되지 않아서 NGM이 한참 기다리고, 그동안 넥슨 플러그가 "게임 실행에 실패했습니다"를 띄워요.
-  # 서비스를 꺼 두면 NGM이 기다리지 않고 바로 게임을 켜요.
-  local svc='HKLM\System\CurrentControlSet\Services\Nexon Launcher'
-  if w reg query "$svc" >/dev/null 2>&1; then
-    reg_add "$svc" /v Start /t REG_DWORD /d 4
+# 원하는 레지스트리 값을 Wine 레지스트리 파일(user.reg, system.reg)과 비교해서 다른 것만 한 번에 넣어요.
+# 다 같으면 Wine을 띄우지 않아요. 값마다 `wine reg add`를 부르면 그때마다 Wine이 부팅돼서 넥슨 플러그를
+# 켜는 데 1분 가까이 걸렸어요.
+# 인자 하나가 값 하나: "HKCU|키|이름|sz|값", "HKLM|키|이름|dword|값", 앞에 "?"를 붙이면 키가 있을 때만.
+reg_sync() {
+  local regfile="$DRIVE_C/windows/temp/azur-settings.reg" n
+  mkdir -p "$DRIVE_C/windows/temp"
+  n="$(python3 -I - "$PREFIX" "$regfile" "$@" <<'PY'
+import os, re, sys
+prefix, out, wants = sys.argv[1], sys.argv[2], sys.argv[3:]
+
+def load(path):
+    keys, cur = {}, None
+    try:
+        lines = open(path, encoding="utf-8", errors="replace").read().splitlines()
+    except OSError:
+        return keys
+    for line in lines:
+        if line.startswith("["):
+            m = re.match(r"\[(.*)\](?:\s+\d+)?$", line)
+            cur = m.group(1).replace("\\\\", "\\").lower() if m else None
+            keys.setdefault(cur, {})
+        elif cur is not None and line.startswith('"'):
+            m = re.match(r'"((?:[^"\\]|\\.)*)"=(.*)$', line)
+            if m:
+                keys[cur][m.group(1).replace('\\"', '"').replace("\\\\", "\\").lower()] = m.group(2)
+    return keys
+
+hives = {"HKCU": load(os.path.join(prefix, "user.reg")), "HKLM": load(os.path.join(prefix, "system.reg"))}
+roots = {"HKCU": "HKEY_CURRENT_USER", "HKLM": "HKEY_LOCAL_MACHINE"}
+esc = lambda s: s.replace("\\", "\\\\").replace('"', '\\"')
+sections = {}
+for w in wants:
+    only_if_exists = w.startswith("?")
+    hive, key, name, typ, value = w.lstrip("?").split("|", 4)
+    have = hives[hive].get(key.lower())
+    if only_if_exists and have is None:
+        continue
+    data = "dword:%08x" % int(value) if typ == "dword" else '"%s"' % esc(value)
+    if have is not None and have.get(name.lower()) == data:
+        continue
+    sections.setdefault("%s\\%s" % (roots[hive], key), []).append('"%s"=%s' % (esc(name), data))
+if sections:
+    with open(out, "w", encoding="utf-8") as f:
+        f.write("REGEDIT4\n")
+        for k, vals in sections.items():
+            f.write("\n[%s]\n%s\n" % (k, "\n".join(vals)))
+print(sum(len(v) for v in sections.values()))
+PY
+)" || die "레지스트리 설정을 확인하지 못했어요."
+  if [ "${n:-0}" -gt 0 ]; then
+    w regedit /S 'C:\windows\temp\azur-settings.reg' >/dev/null 2>&1 || die "레지스트리 설정 실패"
   fi
-  return 0
+  rm -f "$regfile"
+  echo "$n"
 }
 
 apply_settings() { # 넥슨 플러그를 켜기 직전에 적용해요 (게임은 넥슨 플러그가 켜요)
-  disable_nexon_launcher_service
-  reg_add 'HKCU\Software\Wine\Mac Driver' /v RetinaMode /t REG_SZ /d "$(yn "$(setting retina)")"
-  reg_add 'HKCU\Software\Wine\Mac Driver' /v LeftCommandIsCtrl /t REG_SZ /d "$(yn "$(setting left_cmd_ctrl)")"
+  local k='Software\manjuu\AzurPromilia' vals=()   # k: 게임(Unity)이 화면 설정을 저장하는 곳
+  # NGM은 게임을 켤 때 "Nexon Launcher" 서비스를 시작하려고 해요. Wine에서는 끝내 시작되지 않아서 NGM이
+  # 한참 기다리고, 그동안 넥슨 플러그가 "게임 실행에 실패했습니다"를 띄워요. 꺼 두면 바로 게임을 켜요.
+  vals+=("?HKLM|System\CurrentControlSet\Services\Nexon Launcher|Start|dword|4")
+  vals+=("HKCU|Software\Wine\Mac Driver|RetinaMode|sz|$(yn "$(setting retina)")")
+  vals+=("HKCU|Software\Wine\Mac Driver|LeftCommandIsCtrl|sz|$(yn "$(setting left_cmd_ctrl)")")
   # 게임은 자기 창의 IME를 꺼 둬서 맥 한글 입력기가 조합을 못 해요. 런타임(p2 이상)의 ImeFallback이
   # 게임 창의 키를 맥 입력기에 먼저 보내고 완성된 글자를 게임에 넘겨요. 넥슨 플러그에는 영향이 없어요.
-  reg_add 'HKCU\Software\Wine\AppDefaults\AzurPromilia.exe\Mac Driver' /v ImeFallback /t REG_SZ /d "$(yn "$(setting game_hangul)")"
-  local k='HKCU\Software\manjuu\AzurPromilia'   # 게임(Unity)이 화면 설정을 저장하는 곳
+  vals+=("HKCU|Software\Wine\AppDefaults\AzurPromilia.exe\Mac Driver|ImeFallback|sz|$(yn "$(setting game_hangul)")")
   if [ "$(setting custom_resolution)" = 1 ]; then
-    reg_add "$k" /v 'Screenmanager Resolution Width_h182942802' /t REG_DWORD /d "$(setting width)"
-    reg_add "$k" /v 'Screenmanager Resolution Height_h2627697771' /t REG_DWORD /d "$(setting height)"
-    reg_add "$k" /v 'Screenmanager Resolution Use Native_h1405027254' /t REG_DWORD /d 0
+    vals+=("HKCU|$k|Screenmanager Resolution Width_h182942802|dword|$(setting width)")
+    vals+=("HKCU|$k|Screenmanager Resolution Height_h2627697771|dword|$(setting height)")
+    vals+=("HKCU|$k|Screenmanager Resolution Use Native_h1405027254|dword|0")
   fi
   if [ "$(setting custom_fps)" = 1 ]; then
-    reg_add "$k" /v 'Screenmanager RefreshRate Numerator_h3473131500' /t REG_DWORD /d "$(setting fps)"
-    reg_add "$k" /v 'Screenmanager RefreshRate Denominator_h3597814599' /t REG_DWORD /d 1
+    vals+=("HKCU|$k|Screenmanager RefreshRate Numerator_h3473131500|dword|$(setting fps)")
+    vals+=("HKCU|$k|Screenmanager RefreshRate Denominator_h3597814599|dword|1")
   fi
+  reg_sync "${vals[@]}" >/dev/null
+}
+
+# 예전 이름을 쓰는 곳이 있어서 남겨 둬요.
+disable_nexon_launcher_service() {
+  reg_sync "?HKLM|System\CurrentControlSet\Services\Nexon Launcher|Start|dword|4" >/dev/null
 }
 
 cmd_plug() {
