@@ -5,7 +5,7 @@
 # 필요한 것: Xcode 명령줄 도구 (xcode-select --install)
 set -euo pipefail
 
-VERSION="0.3.0"
+VERSION="0.3.1"
 DIR="$(cd "$(dirname "$0")" && pwd)"
 OUT="${1:-$DIR/dist/Azur Promilia Launcher.app}"
 EXE="AzurPromiliaLauncher"
@@ -18,7 +18,7 @@ swiftc -O -parse-as-library -swift-version 5 \
   -target arm64-apple-macos13.0 \
   -o "$OUT/Contents/MacOS/$EXE" "$DIR/app/Launcher.swift"
 
-cp "$DIR/azurctl.sh" "$DIR/extract_zip.py" "$OUT/Contents/Resources/"
+cp "$DIR/azurctl.sh" "$DIR/extract_zip.py" "$DIR/rename_font.py" "$OUT/Contents/Resources/"
 chmod +x "$OUT/Contents/Resources/azurctl.sh"
 
 cat > "$OUT/Contents/Info.plist" <<EOF

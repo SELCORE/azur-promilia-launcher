@@ -190,6 +190,32 @@ cmd_configure() {
   echo "설정 완료"
 }
 
+# ---- 한글 글꼴 ----
+# 게임은 윈도우에 깔린 글꼴을 이름으로 찾아요(MiSans, Noto Sans S Chinese, Malgun Gothic).
+# Wine 환경에는 이 글꼴들이 없어서 한글이 빠져 보여요. 맥에 원래 있는 한글 글꼴(AppleGothic)을
+# 그 이름으로 복사해서 C:\windows\Fonts에 넣어요. 이 맥 안에서만 쓰는 복사본이에요.
+FONTS_VERSION=1
+KO_FONT_SRC="/System/Library/Fonts/Supplemental/AppleGothic.ttf"
+fonts_current() { [ "$(cat "$DRIVE_C/windows/Fonts/.azur-fonts" 2>/dev/null)" = "$FONTS_VERSION" ]; }
+cmd_install_fonts() {
+  need_prefix
+  [ -f "$KO_FONT_SRC" ] || die "맥 한글 글꼴을 찾지 못했어요: $KO_FONT_SRC"
+  local fd="$DRIVE_C/windows/Fonts" key='HKLM\Software\Microsoft\Windows NT\CurrentVersion\Fonts' entry fam file
+  mkdir -p "$fd"
+  for entry in "Malgun Gothic|malgun.ttf" "MiSans|MiSans-Regular.ttf" "Noto Sans S Chinese|NotoSansSC-Regular.ttf"; do
+    fam="${entry%%|*}"; file="${entry#*|}"
+    python3 -I "$SCRIPT_DIR/rename_font.py" "$KO_FONT_SRC" "$fd/$file" "$fam" >/dev/null || die "글꼴을 만들지 못했어요: $fam"
+    reg_add "$key" /v "$fam (TrueType)" /t REG_SZ /d "$file"
+  done
+  local arialuni="/System/Library/Fonts/Supplemental/Arial Unicode.ttf"
+  if [ -f "$arialuni" ]; then
+    cp "$arialuni" "$fd/ARIALUNI.TTF"
+    reg_add "$key" /v "Arial Unicode MS (TrueType)" /t REG_SZ /d ARIALUNI.TTF
+  fi
+  echo "$FONTS_VERSION" > "$fd/.azur-fonts"
+  echo "한글 글꼴 설치 완료"
+}
+
 cmd_link_game() { # <existing AzurPromilia folder>  (다른 곳에 이미 받은 게임을 복사 없이 연결)
   need_prefix
   [ -f "${1:-}/AzurPromilia.exe" ] || die "AzurPromilia.exe가 있는 폴더를 지정해 주세요."
@@ -250,7 +276,19 @@ cmd_set() { # key value
 }
 yn() { [ "$1" = 1 ] && echo y || echo n; }
 
+disable_nexon_launcher_service() {
+  # NGM은 게임을 켤 때 "Nexon Launcher" 서비스를 설치하고 시작을 시도해요. Wine에서는 이 서비스가
+  # 끝내 시작되지 않아서 NGM이 한참 기다리고, 그동안 넥슨 플러그가 "게임 실행에 실패했습니다"를 띄워요.
+  # 서비스를 꺼 두면 NGM이 기다리지 않고 바로 게임을 켜요.
+  local svc='HKLM\System\CurrentControlSet\Services\Nexon Launcher'
+  if w reg query "$svc" >/dev/null 2>&1; then
+    reg_add "$svc" /v Start /t REG_DWORD /d 4
+  fi
+  return 0
+}
+
 apply_settings() { # 넥슨 플러그를 켜기 직전에 적용해요 (게임은 넥슨 플러그가 켜요)
+  disable_nexon_launcher_service
   reg_add 'HKCU\Software\Wine\Mac Driver' /v RetinaMode /t REG_SZ /d "$(yn "$(setting retina)")"
   reg_add 'HKCU\Software\Wine\Mac Driver' /v LeftCommandIsCtrl /t REG_SZ /d "$(yn "$(setting left_cmd_ctrl)")"
   local k='HKCU\Software\manjuu\AzurPromilia'   # 게임(Unity)이 화면 설정을 저장하는 곳
@@ -269,6 +307,7 @@ cmd_plug() {
   need_prefix
   [ -f "$DRIVE_C/Nexon/NexonPlug/NexonPlug.exe" ] || die "넥슨 플러그가 없어요. 먼저 ./azurctl.sh setup"
   mkdir -p "$LOG_DIR"
+  fonts_current || cmd_install_fonts >/dev/null
   apply_settings
   local hud=0 dxmt_config=""
   [ "$(setting metal_hud)" = 1 ] && hud=1
@@ -351,7 +390,7 @@ cmd_setup() { # [--runtime-from TAR.XZ] [--webview2-from DIR] [--import-crossove
   fi
   say "4/6 넥슨 플러그 설치"; cmd_install_plug
   say "5/6 NGM 설치"; cmd_install_ngm
-  say "6/6 호환 설정"; cmd_configure
+  say "6/6 호환 설정"; cmd_configure; cmd_install_fonts
   if [ -n "$import_bottle" ] && [ ! -e "$DRIVE_C/Nexon/AzurPromilia" ]; then
     say "CrossOver에 받아 둔 게임 가져오기"; cmd_import_crossover "$import_bottle"
   fi
@@ -361,7 +400,7 @@ cmd_setup() { # [--runtime-from TAR.XZ] [--webview2-from DIR] [--import-crossove
 
 sub="${1:-status}"; shift || true
 case "$sub" in
-  setup|install-runtime|init-prefix|install-webview2|install-plug|install-ngm|configure|link-game|import-crossover|plug|game-direct|stop|status|status-code|detect-sources|winecfg|shell|settings|get|set|running)
+  setup|install-runtime|init-prefix|install-webview2|install-plug|install-ngm|configure|link-game|import-crossover|plug|game-direct|stop|status|status-code|detect-sources|winecfg|shell|settings|get|set|running|install-fonts)
     "cmd_${sub//-/_}" "$@" ;;
   *) sed -n '2,12p' "$0"; exit 1 ;;
 esac
