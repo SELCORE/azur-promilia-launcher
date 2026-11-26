@@ -33,6 +33,8 @@ Running it again on an already patched tree is fine: patches that are already in
    Auto-repeats of letters the input method used (holding a movement key) skip the input
    method, and whether an input method is active is remembered until the input source
    changes, so held keys cost no round trips to the Cocoa main thread (p3).
+   Escape never goes through the input method: it is sent to the game as is, and any syllable
+   left in the input method (moving with WASD in Korean mode leaves one) is discarded (p5).
 
 4. game-mode (loader/wine_info.plist.in)
    Wine's loader embeds an Info.plist in its binary, and macOS takes the app category from it.
@@ -336,6 +338,14 @@ static BOOL azur_ime_fallback_key(HWND hwnd, const macdrv_event *event, WORD vke
     if (event->key.modifiers & (NX_CONTROLMASK | NX_COMMANDMASK | NX_ALTERNATEMASK)) return FALSE;
     if (!(focus = get_focus())) focus = hwnd;
     if (!focus || NtUserGetWindowInputContext(focus)) return FALSE;  /* normal IME path */
+    if (vkey == VK_ESCAPE)
+    {
+        /* Escape always goes to the game (menus, closing chat). Moving with WASD in Korean mode
+         * leaves an invisible syllable in the input method, which would otherwise use up Escape
+         * to cancel it; drop that syllable instead, like a Windows IME does on Escape. */
+        if (azur_im_cache > 0) macdrv_clear_ime_text();
+        return FALSE;
+    }
     if (!azur_using_input_method(event->key.time_ms)) return FALSE;
 
     len = macdrv_azur_ime_compose_key(keyc, (unsigned int)event->key.modifiers, text, ARRAY_SIZE(text), &consumed);
@@ -346,7 +356,7 @@ static BOOL azur_ime_fallback_key(HWND hwnd, const macdrv_event *event, WORD vke
 
     switch (vkey)
     {
-    case VK_BACK: case VK_DELETE: case VK_RETURN: case VK_TAB: case VK_ESCAPE:
+    case VK_BACK: case VK_DELETE: case VK_RETURN: case VK_TAB:
     case VK_LEFT: case VK_RIGHT: case VK_UP: case VK_DOWN:
     case VK_HOME: case VK_END: case VK_PRIOR: case VK_NEXT:
         /* e.g. Backspace inside a syllable: the game never saw that syllable */

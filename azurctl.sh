@@ -22,10 +22,10 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # Wine + DXMT 런타임: CodeWeavers가 공개한 CrossOver 소스로 이 저장소의 GitHub Actions에서 직접 빌드하고
 # DXMT 공식 릴리스를 넣은 것이에요 (runtime/build-runtime.sh). 이 저장소의 릴리스에서 받아요.
-RUNTIME_TAG="runtime-cx26.3.0-dxmt0.80-p4"
-RUNTIME_NAME="azur-runtime-cx26.3.0-dxmt0.80-p4"
+RUNTIME_TAG="runtime-cx26.3.0-dxmt0.80-p5"
+RUNTIME_NAME="azur-runtime-cx26.3.0-dxmt0.80-p5"
 RUNTIME_URL="https://github.com/SELCORE/azur-promilia-launcher/releases/download/$RUNTIME_TAG/$RUNTIME_NAME.tar.xz"
-RUNTIME_SHA256="355f17ba50ea7fab34c55c2af10cdc30d288da9c777452f93334eef159be528f"
+RUNTIME_SHA256="8cfb8b11268560c14cdad54e6aa34e0a05b3e087077879f5f9806b71bfb58e9f"
 
 PLUG_URL="https://platform.nexon.com/NexonPlug/Install/InstallData/65538.z00"
 NGM_URL="https://platform.nexon.com/NGM/Bin"
