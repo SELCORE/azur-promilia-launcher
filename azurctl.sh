@@ -366,6 +366,12 @@ cmd_plug() {
   fonts_current || cmd_install_fonts >/dev/null
   mono_current || cmd_install_mono >/dev/null
   migrate_game_link
+  # wineserver 없이 남은 프로세스는 멈춘 찌꺼기라 먼저 정리해요 (새 넥슨 플러그와 섞이지 않게).
+  if [ "$(cmd_running)" != yes ]; then
+    local stale; stale="$(our_wine_pids)"
+    # shellcheck disable=SC2086
+    [ -n "$stale" ] && kill -9 $stale 2>/dev/null
+  fi
   apply_settings
   local hud=0 dxmt_config=""
   [ "$(setting metal_hud)" = 1 ] && hud=1
@@ -383,8 +389,10 @@ cmd_plug() {
   echo "넥슨 플러그를 켰어요."
 }
 
-cmd_running() { # 이 런처의 wineserver가 떠 있으면 yes (경로가 .../wine/lib/wine/../../bin/wineserver 처럼 보여요)
-  ps -axo command= | grep -F "$WINE_DIR/" | grep -q 'wineserver' && echo yes || echo no
+cmd_running() { # 이 런처의 wineserver가 떠 있으면 yes, 서버 없이 Wine 프로세스만 남았으면 stale, 아니면 no
+  if ps -axo command= | grep -F "$WINE_DIR/" | grep -q 'wineserver'; then echo yes
+  elif [ -n "$(our_wine_pids)" ]; then echo stale
+  else echo no; fi
 }
 
 cmd_game_direct() { # 런처 없이 게임 실행 파일만 켜 보는 테스트 (로그인은 안 돼요)
@@ -393,7 +401,32 @@ cmd_game_direct() { # 런처 없이 게임 실행 파일만 켜 보는 테스트
   w 'C:\Nexon\AzurPromilia\AzurPromilia.exe' >"$LOG_DIR/game-direct.log" 2>&1 || true
 }
 
-cmd_stop()    { [ -d "$PREFIX" ] && wserver -k 2>/dev/null || true; echo "종료했어요."; }
+# 이 런처의 Wine으로 돈 프로세스 번호. 실제 실행 파일 경로로 골라요: 런처의 wine 폴더 안이거나,
+# 런타임 p4부터 쓰는 임시 앱 번들(winetemp-<이 런처 로더의 inode>-...)이면 우리 것이에요.
+# CrossOver 같은 다른 Wine은 경로가 달라서 건드리지 않아요. (Wine 프로세스는 ps에 환경 변수가 안 보여요.)
+our_wine_pids() {
+  local ino; ino="$(stat -f %i "$WINE_DIR/lib/wine/x86_64-unix/wine" 2>/dev/null || echo none)"
+  python3 -I -c '
+import ctypes, subprocess, sys
+lib = ctypes.CDLL("/usr/lib/libproc.dylib")
+buf = ctypes.create_string_buffer(4096)
+wine_dir, tag = sys.argv[1] + "/", "/winetemp-%s-" % sys.argv[2]
+for s in subprocess.run(["ps", "-axo", "pid="], capture_output=True, text=True).stdout.split():
+    if lib.proc_pidpath(int(s), buf, 4096) > 0:
+        path = buf.value.decode("utf-8", "replace")
+        if path.startswith(wine_dir) or tag in path:
+            print(s)
+' "$WINE_DIR" "$ino" 2>/dev/null || true
+}
+cmd_stop() {
+  [ -d "$PREFIX" ] && wserver -k 2>/dev/null || true
+  # wineserver가 먼저 죽어서 주인을 잃은 프로세스(예: CPU를 계속 쓰는 예전 넥슨 플러그)도 정리해요.
+  local i pids=""
+  for i in 1 2 3; do pids="$(our_wine_pids)"; [ -z "$pids" ] && break; sleep 1; done
+  # shellcheck disable=SC2086
+  [ -n "$pids" ] && kill -9 $pids 2>/dev/null
+  echo "종료했어요."
+}
 cmd_winecfg() { need_prefix; w winecfg; }
 cmd_shell()   { need_prefix; echo "WINEPREFIX=$PREFIX  wine=$WINE_DIR/bin/wine"; }
 
@@ -404,6 +437,8 @@ cmd_shell()   { need_prefix; echo "WINEPREFIX=$PREFIX  wine=$WINE_DIR/bin/wine";
 cmd_download_status() {
   local game="$DRIVE_C/Nexon/AzurPromilia" pend="$DRIVE_C/Nexon/Download/2887/install"
   local gb pieces state ngm=no stamp="$APP_HOME/.download-progress"
+  # 게임 중에는 폴더 크기를 재지 않아요 (85GB를 훑는 일이라 게임에 방해돼요).
+  if pgrep -f 'AzurPromilia\.exe' >/dev/null 2>&1; then echo "state=playing game_gb=0.0 pieces=none"; return 0; fi
   pgrep -f 'NGM64\.exe' >/dev/null && ngm=yes
   gb="$(du -sk "$game" 2>/dev/null | awk '{printf "%.1f", $1/1048576}')"; gb="${gb:-0.0}"
   pieces="$(ls "$pend" 2>/dev/null | tr '\n' ' ' | sed 's/ $//')"

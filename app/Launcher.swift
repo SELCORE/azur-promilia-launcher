@@ -24,6 +24,10 @@ final class LauncherModel: ObservableObject {
 
     @Published var state: State = .checking
     @Published var running = false
+    /// wineserver 없이 Wine 프로세스만 남은 상태 (멈춘 찌꺼기, CPU를 계속 쓸 수 있어요)
+    @Published var stale = false
+    /// 넥슨 플러그 실행/종료를 처리하는 중 (버튼을 두 번 누르지 않게)
+    @Published var acting = false
     @Published var busy = false
     @Published var progress = ""
     @Published var errorText: String?
@@ -52,58 +56,88 @@ final class LauncherModel: ObservableObject {
     let appVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
 
     private var loading = false
-    private var timer: Timer?
+    private var pollTask: Task<Void, Never>?
+    private var staleCount = 0
 
-    let ctl = Bundle.main.resourceURL!.appendingPathComponent("azurctl.sh").path
+    let ctl = (Bundle.main.resourceURL ?? URL(fileURLWithPath: Bundle.main.bundlePath))
+        .appendingPathComponent("azurctl.sh").path
     var appHome: URL {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/Azur Promilia Launcher")
     }
 
     init() {
-        Task { await refresh() }
-        Task { await checkForUpdate() }
-        timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                await self?.refreshRunning()
-                await self?.refreshDownload()
+        // 상태 확인은 한 줄로 차례대로 돌려요. 앞의 확인이 끝나기 전에 다음 확인이 겹쳐 쌓이지 않아요.
+        pollTask = Task { [weak self] in
+            await self?.refresh()
+            var tick = 0
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
+                guard let self else { return }
+                await self.refreshRunning()
+                if tick % 3 == 0 { await self.refreshDownload() }   // 다운로드 상태는 15초에 한 번
+                tick += 1
             }
         }
+        Task { await checkForUpdate() }
     }
 
     /// bash로 명령을 실행해요. onLine이 있으면 한 줄씩 넘겨줘요.
-    nonisolated func shell(_ args: [String], onLine: (@Sendable (String) -> Void)? = nil) async -> (Int32, String) {
+    /// - timeout: 이 시간(초)이 지나도 안 끝나면 멈춰요. nil이면 끝날 때까지 기다려요(준비처럼 오래 걸리는 일).
+    /// 스크립트가 띄운 Wine/wineserver가 출력 파이프를 물고 있어도, 스크립트가 끝나면 기다리지 않고 돌아와요.
+    nonisolated func shell(_ args: [String], timeout: TimeInterval? = 30,
+                           onLine: (@Sendable (String) -> Void)? = nil) async -> (Int32, String) {
         await withCheckedContinuation { cont in
-            DispatchQueue.global().async {
+            DispatchQueue.global(qos: .utility).async {
                 let p = Process()
                 p.executableURL = URL(fileURLWithPath: "/bin/bash")
                 p.arguments = args
+                p.standardInput = FileHandle.nullDevice
                 let pipe = Pipe()
                 p.standardOutput = pipe
                 p.standardError = pipe
                 let lock = NSLock()
                 var out = Data()
+                let eof = DispatchSemaphore(value: 0)
                 pipe.fileHandleForReading.readabilityHandler = { h in
                     let d = h.availableData
-                    guard !d.isEmpty else { return }
+                    if d.isEmpty { h.readabilityHandler = nil; eof.signal(); return }
                     lock.lock(); out.append(d); lock.unlock()
-                    if let onLine, let s = String(data: d, encoding: .utf8) {
+                    if let onLine {
+                        let s = String(decoding: d, as: UTF8.self)
                         for line in s.split(whereSeparator: \.isNewline) where !line.isEmpty { onLine(String(line)) }
                     }
                 }
                 do { try p.run() } catch {
-                    cont.resume(returning: (-1, "\(error)")); return
+                    pipe.fileHandleForReading.readabilityHandler = nil
+                    cont.resume(returning: (-1, "실행하지 못했어요: \(error.localizedDescription)"))
+                    return
+                }
+                var timedOut = false
+                if let timeout {
+                    let deadline = Date().addingTimeInterval(timeout)
+                    while p.isRunning && Date() < deadline { usleep(50_000) }
+                    if p.isRunning {
+                        timedOut = true
+                        p.terminate()
+                        usleep(500_000)
+                        if p.isRunning { kill(p.processIdentifier, SIGKILL) }
+                    }
                 }
                 p.waitUntilExit()
+                _ = eof.wait(timeout: .now() + 1)   // 남은 출력은 1초만 기다려요
                 pipe.fileHandleForReading.readabilityHandler = nil
-                let rest = pipe.fileHandleForReading.readDataToEndOfFile()
-                lock.lock(); out.append(rest); let all = out; lock.unlock()
-                cont.resume(returning: (p.terminationStatus, String(data: all, encoding: .utf8) ?? ""))
+                lock.lock(); let all = out; lock.unlock()
+                var text = String(decoding: all, as: UTF8.self)
+                if timedOut { text += "\n시간이 너무 오래 걸려서 멈췄어요. 다시 해 보고, 계속 그러면 문제 보고를 눌러 주세요." }
+                cont.resume(returning: (timedOut ? -2 : p.terminationStatus, text))
             }
         }
     }
 
-    func ctlRun(_ args: String...) async -> (Int32, String) { await shell([ctl] + args) }
+    func ctlRun(_ args: String..., timeout: TimeInterval? = 30) async -> (Int32, String) {
+        await shell([ctl] + args, timeout: timeout)
+    }
 
     func refresh() async {
         let (_, code) = await ctlRun("status-code")
@@ -114,7 +148,11 @@ final class LauncherModel: ObservableObject {
 
     func refreshRunning() async {
         let (_, r) = await ctlRun("running")
-        running = r.trimmingCharacters(in: .whitespacesAndNewlines) == "yes"
+        let s = r.trimmingCharacters(in: .whitespacesAndNewlines)
+        running = s == "yes"
+        // 켜거나 끄는 순간에도 잠깐 stale로 보일 수 있어서, 두 번 연속일 때만 알려요.
+        staleCount = s == "stale" ? staleCount + 1 : 0
+        stale = staleCount >= 2 && !acting
     }
 
     func refreshDownload() async {
@@ -160,7 +198,7 @@ final class LauncherModel: ObservableObject {
     /// 문제 보고: 상태와 로그(개인정보 가림)를 모아 클립보드에 복사하고 GitHub 이슈 양식을 열어요.
     func report() {
         Task {
-            let (_, out) = await shell(["-c", "AZUR_APP_VERSION=\"$1\" \"$0\" report", ctl, appVersion])
+            let (_, out) = await shell(["-c", "AZUR_APP_VERSION=\"$1\" \"$0\" report", ctl, appVersion], timeout: 90)
             let file = appHome.appendingPathComponent("logs/report.md")
             try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
             try? out.write(to: file, atomically: true, encoding: .utf8)
@@ -177,7 +215,7 @@ final class LauncherModel: ObservableObject {
     func uninstall(keepGame: Bool) {
         busy = true
         Task {
-            let (status, out) = await ctlRun("uninstall", keepGame ? "--keep-game" : "--all")
+            let (status, out) = await ctlRun("uninstall", keepGame ? "--keep-game" : "--all", timeout: nil)
             busy = false
             notice = status == 0
                 ? out.trimmingCharacters(in: .whitespacesAndNewlines) + "\n앱 자체는 응용 프로그램 폴더에서 휴지통으로 옮기면 지워져요."
@@ -209,6 +247,19 @@ final class LauncherModel: ObservableObject {
 
     func save(_ key: String, _ value: String) {
         guard !loading else { return }
+        // 숫자는 저장하기 전에 여기서 먼저 확인해요 (잘못된 값으로 스크립트를 부르지 않게).
+        let limits: [String: (ClosedRange<Int>, String)] = [
+            "width": (640...16384, "가로 해상도는 640에서 16384 사이 숫자로 넣어 주세요."),
+            "height": (480...16384, "세로 해상도는 480에서 16384 사이 숫자로 넣어 주세요."),
+            "fps": (30...360, "주사율은 30에서 360 사이 숫자로 넣어 주세요."),
+        ]
+        if let (range, message) = limits[key] {
+            guard let n = Int(value), range.contains(n) else {
+                errorText = message
+                Task { await loadSettings() }
+                return
+            }
+        }
         Task {
             let (status, out) = await ctlRun("set", key, value)
             if status != 0 {
@@ -229,6 +280,7 @@ final class LauncherModel: ObservableObject {
         Task {
             let (status, out) = await shell(
                 ["-c", "\"$0\" setup $(\"$0\" detect-sources)", ctl],
+                timeout: nil,
                 onLine: { line in
                     Task { @MainActor [weak self] in
                         if line.hasPrefix("==>") || line.hasPrefix("받는 중") || line.contains("완료") {
@@ -247,17 +299,26 @@ final class LauncherModel: ObservableObject {
     }
 
     func launchPlug() {
+        guard !acting else { return }
+        acting = true
         Task {
-            let (status, out) = await ctlRun("plug")
+            let (status, out) = await ctlRun("plug", timeout: 120)
             errorText = status == 0 ? nil : out.trimmingCharacters(in: .whitespacesAndNewlines)
-            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            acting = false
             await refreshRunning()
         }
     }
 
+    /// 넥슨 플러그와 게임을 끄고, 서버를 잃고 남은 Wine 프로세스도 정리해요.
     func stop() {
+        guard !acting else { return }
+        acting = true
+        stale = false
         Task {
-            _ = await ctlRun("stop")
+            _ = await ctlRun("stop", timeout: 60)
+            acting = false
+            staleCount = 0
             await refreshRunning()
         }
     }
@@ -290,6 +351,11 @@ struct ContentView: View {
                 setupSection
             case .ready:
                 launchSection
+                if m.stale {
+                    banner(color: .orange, icon: "exclamationmark.triangle.fill",
+                           text: "넥슨 플러그나 게임이 비정상으로 꺼지면서 Wine 프로세스가 남아 있어요. CPU를 계속 쓸 수 있으니 정리해 주세요.",
+                           button: "정리하기") { m.stop() }
+                }
                 downloadSection
             }
             if let e = m.errorText {
@@ -389,13 +455,14 @@ struct ContentView: View {
             Button {
                 m.launchPlug()
             } label: {
-                Label("넥슨 플러그 실행", systemImage: "play.fill").frame(maxWidth: .infinity)
+                Label(m.acting ? "처리 중…" : "넥슨 플러그 실행", systemImage: "play.fill").frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
+            .disabled(m.acting)
             Button("종료") { m.stop() }
                 .controlSize(.large)
-                .disabled(!m.running)
+                .disabled(m.acting || !(m.running || m.stale))
         }
     }
 }
