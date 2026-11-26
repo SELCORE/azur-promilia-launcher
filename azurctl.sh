@@ -5,6 +5,8 @@
 #   ./azurctl.sh plug             넥슨 플러그를 켜요
 #   ./azurctl.sh stop             이 런처의 Wine 프로세스를 모두 종료해요
 #   ./azurctl.sh status           설치 상태를 보여줘요
+#   ./azurctl.sh settings         설정 보기 / set <이름> <값> 으로 바꾸기
+#     metal_hud(0/1) retina(0/1) left_cmd_ctrl(0/1) custom_resolution(0/1) width height custom_fps(0/1) fps
 #
 # 개별 단계: install-runtime, init-prefix, install-webview2, install-plug, install-ngm,
 #           configure, link-game, import-crossover, game-direct, winecfg, shell
@@ -222,15 +224,65 @@ cmd_import_crossover() { # [보틀 이름]  CrossOver 보틀에 받아 둔 게�
   echo "CrossOver 보틀 '$bottle'의 게임을 가져왔어요 (설치 정보 키: $key)."
 }
 
+# ---- 설정 (settings.conf, key=value) ----
+SETTINGS="$APP_HOME/settings.conf"
+SETTING_KEYS="metal_hud retina left_cmd_ctrl custom_resolution width height custom_fps fps"
+setting_default() {
+  case "$1" in width) echo 1920 ;; height) echo 1200 ;; fps) echo 60 ;; *) echo 0 ;; esac
+}
+setting() { # key
+  local v; v="$(grep -E "^$1=" "$SETTINGS" 2>/dev/null | tail -1 | cut -d= -f2-)" || true
+  echo "${v:-$(setting_default "$1")}"
+}
+cmd_settings() { local k; for k in $SETTING_KEYS; do echo "$k=$(setting "$k")"; done; }
+cmd_get() { setting "${1:?설정 이름}"; }
+cmd_set() { # key value
+  local k="${1:?설정 이름}" v="${2:?값}"
+  case "$k" in
+    metal_hud|retina|left_cmd_ctrl|custom_resolution|custom_fps) [[ "$v" =~ ^[01]$ ]] || die "$k 는 0 또는 1이에요." ;;
+    width|height) [[ "$v" =~ ^[0-9]{3,5}$ ]] && [ "$v" -ge 640 ] || die "$k 는 640 이상의 숫자예요." ;;
+    fps) [[ "$v" =~ ^[0-9]{2,3}$ ]] && [ "$v" -ge 30 ] || die "fps 는 30 이상의 숫자예요." ;;
+    *) die "알 수 없는 설정: $k" ;;
+  esac
+  mkdir -p "$APP_HOME"; touch "$SETTINGS"
+  { grep -vE "^$k=" "$SETTINGS" || true; echo "$k=$v"; } > "$SETTINGS.tmp" && mv "$SETTINGS.tmp" "$SETTINGS"
+  echo "$k=$v"
+}
+yn() { [ "$1" = 1 ] && echo y || echo n; }
+
+apply_settings() { # 넥슨 플러그를 켜기 직전에 적용해요 (게임은 넥슨 플러그가 켜요)
+  reg_add 'HKCU\Software\Wine\Mac Driver' /v RetinaMode /t REG_SZ /d "$(yn "$(setting retina)")"
+  reg_add 'HKCU\Software\Wine\Mac Driver' /v LeftCommandIsCtrl /t REG_SZ /d "$(yn "$(setting left_cmd_ctrl)")"
+  local k='HKCU\Software\manjuu\AzurPromilia'   # 게임(Unity)이 화면 설정을 저장하는 곳
+  if [ "$(setting custom_resolution)" = 1 ]; then
+    reg_add "$k" /v 'Screenmanager Resolution Width_h182942802' /t REG_DWORD /d "$(setting width)"
+    reg_add "$k" /v 'Screenmanager Resolution Height_h2627697771' /t REG_DWORD /d "$(setting height)"
+    reg_add "$k" /v 'Screenmanager Resolution Use Native_h1405027254' /t REG_DWORD /d 0
+  fi
+  if [ "$(setting custom_fps)" = 1 ]; then
+    reg_add "$k" /v 'Screenmanager RefreshRate Numerator_h3473131500' /t REG_DWORD /d "$(setting fps)"
+    reg_add "$k" /v 'Screenmanager RefreshRate Denominator_h3597814599' /t REG_DWORD /d 1
+  fi
+}
+
 cmd_plug() {
   need_prefix
   [ -f "$DRIVE_C/Nexon/NexonPlug/NexonPlug.exe" ] || die "넥슨 플러그가 없어요. 먼저 ./azurctl.sh setup"
   mkdir -p "$LOG_DIR"
+  apply_settings
+  local hud=0 dxmt_config=""
+  [ "$(setting metal_hud)" = 1 ] && hud=1
+  [ "$(setting custom_fps)" = 1 ] && dxmt_config="d3d11.preferredMaxFrameRate=$(setting fps);"
+  # 넥슨 플러그 -> NGM -> 게임 순서로 켜지면서 이 환경 변수가 게임까지 이어져요.
   # shellcheck disable=SC2086
   nohup env WINEPREFIX="$PREFIX" WINEDEBUG="${WINEDEBUG:--all}" WINEMSYNC=1 WINEESYNC=1 DXMT_LOG_PATH="$LOG_DIR" \
-    DYLD_FALLBACK_LIBRARY_PATH="$WINE_DIR/lib:/usr/lib" \
+    DYLD_FALLBACK_LIBRARY_PATH="$WINE_DIR/lib:/usr/lib" MTL_HUD_ENABLED="$hud" DXMT_CONFIG="$dxmt_config" \
     "$WINE_DIR/bin/wine" 'C:\Nexon\NexonPlug\NexonPlug.exe' $GL_FLAGS >"$LOG_DIR/nexonplug.log" 2>&1 &
   echo "넥슨 플러그를 켰어요."
+}
+
+cmd_running() { # 이 런처의 wineserver가 떠 있으면 yes (경로가 .../wine/lib/wine/../../bin/wineserver 처럼 보여요)
+  ps -axo command= | grep -F "$WINE_DIR/" | grep -q 'wineserver' && echo yes || echo no
 }
 
 cmd_game_direct() { # 런처 없이 게임 실행 파일만 켜 보는 테스트 (로그인은 안 돼요)
@@ -309,7 +361,7 @@ cmd_setup() { # [--runtime-from TAR.XZ] [--webview2-from DIR] [--import-crossove
 
 sub="${1:-status}"; shift || true
 case "$sub" in
-  setup|install-runtime|init-prefix|install-webview2|install-plug|install-ngm|configure|link-game|import-crossover|plug|game-direct|stop|status|status-code|detect-sources|winecfg|shell)
+  setup|install-runtime|init-prefix|install-webview2|install-plug|install-ngm|configure|link-game|import-crossover|plug|game-direct|stop|status|status-code|detect-sources|winecfg|shell|settings|get|set|running)
     "cmd_${sub//-/_}" "$@" ;;
   *) sed -n '2,12p' "$0"; exit 1 ;;
 esac

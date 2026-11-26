@@ -38,7 +38,7 @@ CrossOver 없이 무료 Wine과 DXMT로 넥슨 플러그와 아주르 프로밀�
 ```bash
 git clone https://github.com/SELCORE/azur-promilia-launcher.git
 cd azur-promilia-launcher
-./build-app.sh            # dist/Azur Promilia Launcher.app 이 만들어져요
+./build-app.sh            # dist/Azur Promilia Launcher.app 이 만들어져요 (Xcode 명령줄 도구 필요)
 open "dist/Azur Promilia Launcher.app"
 ```
 
@@ -64,6 +64,26 @@ open "dist/Azur Promilia Launcher.app"
 | `wine/` | Wine 본체 (DXMT 포함) |
 | `prefix/` | 윈도우 환경 (C 드라이브) |
 | `logs/` | 준비·실행 기록 |
+
+## 설정
+
+런처 창에서 바꿀 수 있어요. 다음에 넥슨 플러그를 켤 때 적용돼요 (넥슨 플러그가 게임을 켜면서 그대로 이어져요).
+
+| 설정 | 하는 일 |
+|---|---|
+| Metal HUD | 게임 화면 위에 FPS와 GPU 정보를 표시해요 |
+| Retina 모드 | 맥 화면의 원래 해상도로 그려요. 선명하지만 훨씬 무거워져요 |
+| 왼쪽 CMD를 CTRL로 할당 | 왼쪽 ⌘ 키를 Ctrl 키로 써요 |
+| 사용자 정의 해상도 | 넥슨 플러그를 켤 때마다 게임 해상도를 이 값으로 맞춰요 (게임 안 설정보다 우선) |
+| 사용자 지정 모니터 주사율 | 게임 주사율과 DXMT 프레임 상한을 이 값으로 맞춰요. FPS가 60 아래로 묶일 때 켜세요 |
+
+터미널에서는 `./azurctl.sh settings`로 보고, `./azurctl.sh set metal_hud 1`처럼 바꿔요.
+
+**넣지 않은 설정:** 다른 런처에 있는 아래 설정은 이 게임에 맞지 않거나 하지 않기로 해서 넣지 않았어요.
+- **안티치트(AC) 패치, hosts 수정:** 넥슨 보안 모듈을 건드리거나 넥슨 서버 접속을 막는 일이라 계정 제재 위험이 커요. 이 런처는 보안 모듈을 수정하지 않아요.
+- **Steam 패치, Workaround #3:** 다른 회사 게임 전용이거나 이미 아무 일도 하지 않는 설정이에요.
+- **HDR:** 이 게임 빌드는 HDR이 꺼진 채로 나와서, 게임 파일을 고치지 않고는 켤 수 없어요.
+- **타임아웃 문제 해결:** 다른 런처의 Wine에 따로 넣은 수정이라, CrossOver 소스를 그대로 빌드한 이 런타임에는 없어요.
 
 ## 터미널 명령어
 
