@@ -30,6 +30,9 @@ Running it again on an already patched tree is fine: patches that are already in
    until it is committed, because the game has no way to display it. Windows that have an input
    context (Nexon Plug, password fields that turn the IME off on purpose in other programs) are
    unchanged. WINE_MAC_IME_FALLBACK=0/1 overrides the option.
+   Auto-repeats of letters the input method used (holding a movement key) skip the input
+   method, and whether an input method is active is remembered until the input source
+   changes, so held keys cost no round trips to the Cocoa main thread (p3).
 """
 import os
 import sys
@@ -235,7 +238,36 @@ insert_before("dlls/winemac.drv/keyboard.c", "ime-fallback key handler",
  *              azur-promilia-launcher ime-fallback (see runtime/patches/apply.py)
  */
 #define AZUR_IME_EXTRA 0x415a5552  /* dwExtraInfo: TranslateMessage makes no character */
-static BYTE azur_dropped_keys[128];
+enum { AZUR_KEY_UP, AZUR_KEY_DOWN, AZUR_KEY_LETTER, AZUR_KEY_DROPPED };
+static BYTE azur_key_state[128];
+static int azur_im_cache = -1;  /* is a Mac input method active? -1 = ask Cocoa again */
+static unsigned int azur_im_time;
+
+/* Asking Cocoa means a round trip to the main thread, so remember the answer. It is reset
+ * when the input source changes (macdrv_keyboard_changed) and re-checked every 2 s. */
+static BOOL azur_using_input_method(unsigned int now)
+{
+    if (azur_im_cache < 0 || now - azur_im_time > 2000)
+    {
+        azur_im_cache = macdrv_using_input_method();
+        azur_im_time = now;
+    }
+    return azur_im_cache;
+}
+
+static void azur_send_key_no_char(HWND hwnd, WORD vkey, WORD scan, DWORD flags, unsigned int time)
+{
+    INPUT input;
+
+    memset(&input, 0, sizeof(input));
+    input.type           = INPUT_KEYBOARD;
+    input.ki.wVk         = vkey;
+    input.ki.wScan       = scan & 0xff;
+    input.ki.dwFlags     = flags;
+    input.ki.time        = time;
+    input.ki.dwExtraInfo = AZUR_IME_EXTRA;
+    NtUserSendHardwareInput(hwnd, 0, &input, 0);
+}
 
 void macdrv_azur_send_text(HWND hwnd, const WCHAR *text, int len, unsigned int time)
 {
@@ -261,17 +293,25 @@ static BOOL azur_ime_fallback_key(HWND hwnd, const macdrv_event *event, WORD vke
     WCHAR text[64];
     bool consumed = false;
     HWND focus;
-    INPUT input;
     int len;
 
-    if (keyc >= ARRAY_SIZE(azur_dropped_keys)) return FALSE;
+    if (keyc >= ARRAY_SIZE(azur_key_state)) return FALSE;
     if (event->type == KEY_RELEASE)
     {
-        if (!azur_dropped_keys[keyc]) return FALSE;
-        azur_dropped_keys[keyc] = 0;
-        return TRUE;  /* the input method used its key press */
+        BYTE state = azur_key_state[keyc];
+        azur_key_state[keyc] = AZUR_KEY_UP;
+        return state == AZUR_KEY_DROPPED;  /* the input method used its key press */
     }
     if (!azur_ime_fallback) return FALSE;
+
+    /* Auto-repeat of a letter the input method used (holding W to move): send the key
+     * press again without a character and without asking the input method. */
+    if (azur_key_state[keyc] == AZUR_KEY_LETTER)
+    {
+        azur_send_key_no_char(hwnd, vkey, scan, flags, event->key.time_ms);
+        return TRUE;
+    }
+    azur_key_state[keyc] = AZUR_KEY_DOWN;
 
     switch (vkey)
     {
@@ -284,7 +324,7 @@ static BOOL azur_ime_fallback_key(HWND hwnd, const macdrv_event *event, WORD vke
     if (event->key.modifiers & (NX_CONTROLMASK | NX_COMMANDMASK | NX_ALTERNATEMASK)) return FALSE;
     if (!(focus = get_focus())) focus = hwnd;
     if (!focus || NtUserGetWindowInputContext(focus)) return FALSE;  /* normal IME path */
-    if (!macdrv_using_input_method()) return FALSE;
+    if (!azur_using_input_method(event->key.time_ms)) return FALSE;
 
     len = macdrv_azur_ime_compose_key(keyc, (unsigned int)event->key.modifiers, text, ARRAY_SIZE(text), &consumed);
     TRACE_(key)("ime-fallback: keyc %u vkey %#x consumed %d text %s\n", keyc, vkey, consumed,
@@ -298,19 +338,13 @@ static BOOL azur_ime_fallback_key(HWND hwnd, const macdrv_event *event, WORD vke
     case VK_LEFT: case VK_RIGHT: case VK_UP: case VK_DOWN:
     case VK_HOME: case VK_END: case VK_PRIOR: case VK_NEXT:
         /* e.g. Backspace inside a syllable: the game never saw that syllable */
-        azur_dropped_keys[keyc] = 1;
+        azur_key_state[keyc] = AZUR_KEY_DROPPED;
         return TRUE;
     }
 
     /* Letter keys: keep the key press for game controls, but no character for it. */
-    memset(&input, 0, sizeof(input));
-    input.type           = INPUT_KEYBOARD;
-    input.ki.wVk         = vkey;
-    input.ki.wScan       = scan & 0xff;
-    input.ki.dwFlags     = flags;
-    input.ki.time        = event->key.time_ms;
-    input.ki.dwExtraInfo = AZUR_IME_EXTRA;
-    NtUserSendHardwareInput(hwnd, 0, &input, 0);
+    azur_key_state[keyc] = AZUR_KEY_LETTER;
+    azur_send_key_no_char(hwnd, vkey, scan, flags, event->key.time_ms);
     return TRUE;
 }
 
@@ -323,6 +357,14 @@ patch("dlls/winemac.drv/keyboard.c", "ime-fallback hook",
       "    if (scan & 0x100)               flags |= KEYEVENTF_EXTENDEDKEY;\n\n"
       "    if (azur_ime_fallback_key(hwnd, event, vkey, scan, flags)) return;\n\n"
       "    macdrv_send_keyboard_input(hwnd, vkey, scan & 0xff, flags, event->key.time_ms);\n")
+
+patch("dlls/winemac.drv/keyboard.c", "ime-fallback input source changed",
+      "    struct macdrv_thread_data *thread_data = macdrv_thread_data();\n\n"
+      "    TRACE(\"new keyboard layout uchr data %p, type %u, iso %d\\n\", event->keyboard_changed.uchr,\n",
+      "    struct macdrv_thread_data *thread_data = macdrv_thread_data();\n\n"
+      "    azur_im_cache = -1;  /* azur-promilia-launcher ime-fallback: input source changed */\n"
+      "    memset(azur_key_state, 0, sizeof(azur_key_state));\n\n"
+      "    TRACE(\"new keyboard layout uchr data %p, type %u, iso %d\\n\", event->keyboard_changed.uchr,\n")
 
 patch("dlls/win32u/message.c", "ime-fallback no char",
       "    if (msg->message != WM_KEYDOWN && msg->message != WM_SYSKEYDOWN) return TRUE;\n\n",

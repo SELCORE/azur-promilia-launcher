@@ -22,10 +22,10 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # Wine + DXMT 런타임: CodeWeavers가 공개한 CrossOver 소스로 이 저장소의 GitHub Actions에서 직접 빌드하고
 # DXMT 공식 릴리스를 넣은 것이에요 (runtime/build-runtime.sh). 이 저장소의 릴리스에서 받아요.
-RUNTIME_TAG="runtime-cx26.3.0-dxmt0.80-p2"
-RUNTIME_NAME="azur-runtime-cx26.3.0-dxmt0.80-p2"
+RUNTIME_TAG="runtime-cx26.3.0-dxmt0.80-p3"
+RUNTIME_NAME="azur-runtime-cx26.3.0-dxmt0.80-p3"
 RUNTIME_URL="https://github.com/SELCORE/azur-promilia-launcher/releases/download/$RUNTIME_TAG/$RUNTIME_NAME.tar.xz"
-RUNTIME_SHA256="efb294151e8c5d932215b30c77cd1826b9115aa77be205e92bfd14571c1db593"
+RUNTIME_SHA256="996d032398fefe2258d3e832f38e66ae014cb0d710b3c4a199e4a4096922e76c"
 
 PLUG_URL="https://platform.nexon.com/NexonPlug/Install/InstallData/65538.z00"
 NGM_URL="https://platform.nexon.com/NGM/Bin"
@@ -433,6 +433,7 @@ redact() {
 }
 cmd_report() {
   {
+    set +e +o pipefail   # 보고서는 일부 항목이 비어도 끝까지 만들어요 (이 블록은 파이프라인이라 따로 실행돼요)
     echo "### 아주르 프로밀리아 런처 문제 보고"
     echo "- 런처 버전: ${AZUR_APP_VERSION:-알 수 없음}"
     echo "- macOS: $(sw_vers -productVersion) ($(sw_vers -buildVersion))"
@@ -446,6 +447,11 @@ cmd_report() {
     echo '```'
     cmd_status 2>&1
     echo '```'
+    # 게임이 멈출 때 다른 프로세스가 CPU를 잡아먹는지 보려고 넣어요 (프로그램 이름만, 인자는 빼요).
+    echo; echo "#### CPU 사용 상위 프로세스"; echo '```'
+    ps -Ao %cpu=,rss=,comm= -r 2>/dev/null | awk 'NR<=8 {n=$3; sub(/.*\//,"",n); printf "%5s%%  %6dMB  %s\n", $1, $2/1024, n}' || true
+    echo "스왑: $(sysctl -n vm.swapusage 2>/dev/null)"
+    echo '```'
     local f
     for f in "$LOG_DIR/setup.log" "$LOG_DIR/nexonplug.log" "$DRIVE_C/ProgramData/Nexon/NGM/NGM.log" \
              "$DRIVE_C/users/crossover/AppData/Roaming/Nexon/nxDownloader/config/service.log"; do
@@ -454,10 +460,10 @@ cmd_report() {
       tail -30 "$f" | tr -d '\r' | grep -v 'VK_\|^\s*$' | cut -c1-240
       echo '```'
     done
-    local pl; pl="$(find "$DRIVE_C/users" -path '*manjuu/AzurPromilia/Player.log' 2>/dev/null | head -1)"
+    local pl; pl="$(find "$DRIVE_C/users" -path '*manjuu/AzurPromilia/Player.log' -print -quit 2>/dev/null || true)"
     if [ -n "$pl" ]; then
       echo; echo "#### 게임 로그 오류 (마지막 25개)"; echo '```'
-      grep -E 'Exception|\[Error\]|error|Crash' "$pl" | tail -25 | cut -c1-240
+      grep -E 'Exception|\[Error\]|error|Crash' "$pl" | tail -25 | cut -c1-240 || true
       echo '```'
     fi
   } | redact
