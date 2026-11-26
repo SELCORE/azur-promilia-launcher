@@ -21,6 +21,18 @@ swiftc -O -parse-as-library -swift-version 5 \
 cp "$DIR/azurctl.sh" "$DIR/extract_zip.py" "$DIR/rename_font.py" "$OUT/Contents/Resources/"
 chmod +x "$OUT/Contents/Resources/azurctl.sh"
 
+# 개인 아이콘 (선택): app/local-icon.png가 있으면 앱 아이콘으로 써요. 저장소와 릴리스에는 들어가지 않아요.
+ICON_KEY=""
+if [ -f "$DIR/app/local-icon.png" ]; then
+  ISET="$(mktemp -d)/AppIcon.iconset"; mkdir -p "$ISET"
+  for sz in 16 32 128 256 512; do
+    sips -z $sz $sz "$DIR/app/local-icon.png" --out "$ISET/icon_${sz}x${sz}.png" >/dev/null
+    sips -z $((sz*2)) $((sz*2)) "$DIR/app/local-icon.png" --out "$ISET/icon_${sz}x${sz}@2x.png" >/dev/null
+  done
+  iconutil -c icns "$ISET" -o "$OUT/Contents/Resources/AppIcon.icns" && ICON_KEY="<key>CFBundleIconFile</key><string>AppIcon</string>"
+  rm -rf "$(dirname "$ISET")"
+fi
+
 cat > "$OUT/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -36,6 +48,7 @@ cat > "$OUT/Contents/Info.plist" <<EOF
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>LSApplicationCategoryType</key><string>public.app-category.games</string>
   <key>NSHighResolutionCapable</key><true/>
+  $ICON_KEY
 </dict>
 </plist>
 EOF
