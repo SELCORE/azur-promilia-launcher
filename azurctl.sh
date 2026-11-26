@@ -190,6 +190,31 @@ cmd_configure() {
   echo "설정 완료"
 }
 
+# ---- Wine Mono (.NET) ----
+# 게임 안 넥슨 웹 화면(공지, 커뮤니티)을 그리는 cefhelper.exe가 .NET 프로그램이라 Wine Mono가 필요해요.
+# 없으면 웹 화면이 하얀 상자로만 나와요. WineHQ 공식 배포본을 받아요.
+MONO_VER="10.4.1"
+MONO_URL="https://dl.winehq.org/wine/wine-mono/$MONO_VER/wine-mono-$MONO_VER-x86.tar.xz"
+MONO_SHA256="a16606ef0724202e6a6848ece6e0cbba64d11e2f11aefe744af1d93c6d9f99bb"
+mono_dir() { echo "$WINE_DIR/share/wine/mono/wine-mono-$MONO_VER"; }
+mono_current() { [ -d "$(mono_dir)/lib" ] && [ -f "$DRIVE_C/windows/.azur-mono" ]; }
+cmd_install_mono() {
+  need_prefix
+  if [ ! -d "$(mono_dir)/lib" ]; then
+    local tmp; tmp="$(mktemp -d)"
+    fetch "$MONO_URL" "$tmp/mono.tar.xz"
+    [ "$(sha_of "$tmp/mono.tar.xz")" = "$MONO_SHA256" ] || { rm -rf "$tmp"; die "Wine Mono 파일 체크섬이 맞지 않아요."; }
+    mkdir -p "$WINE_DIR/share/wine/mono"
+    tar -xJf "$tmp/mono.tar.xz" -C "$WINE_DIR/share/wine/mono"; rm -rf "$tmp"
+  fi
+  # 같은 폴더의 .cab이 필요해서 Z: 드라이브(맥 경로) 그대로 설치해요.
+  local msi="Z:$(printf '%s' "$(mono_dir)/support/winemono-support.msi" | tr '/' '\\')"
+  w msiexec /i "$msi" /qn >/dev/null 2>&1 || true
+  [ -d "$DRIVE_C/windows/Microsoft.NET/Framework64" ] || die "Wine Mono 지원 패키지를 설치하지 못했어요."
+  echo "$MONO_VER" > "$DRIVE_C/windows/.azur-mono"
+  echo "Wine Mono $MONO_VER 준비 완료"
+}
+
 # ---- 한글 글꼴 ----
 # 게임은 윈도우에 깔린 글꼴을 이름으로 찾아요(MiSans, Noto Sans S Chinese, Malgun Gothic).
 # Wine 환경에는 이 글꼴들이 없어서 한글이 빠져 보여요. 맥에 원래 있는 한글 글꼴(AppleGothic)을
@@ -216,16 +241,35 @@ cmd_install_fonts() {
   echo "한글 글꼴 설치 완료"
 }
 
-cmd_link_game() { # <existing AzurPromilia folder>  (다른 곳에 이미 받은 게임을 복사 없이 연결)
+cmd_link_game() { # <이미 받은 AzurPromilia 폴더>  다시 받지 않고 가져와요
+  # 링크로 연결하면 한쪽에서 게임을 지울 때 다른 쪽 게임까지 지워져요. 그래서 APFS 복제(cp -c)로
+  # 따로 된 사본을 만들어요. 복제는 거의 바로 끝나고, 바뀐 부분이 생기기 전까지 추가 공간도 거의 안 써요.
   need_prefix
   [ -f "${1:-}/AzurPromilia.exe" ] || die "AzurPromilia.exe가 있는 폴더를 지정해 주세요."
   local dest="$DRIVE_C/Nexon/AzurPromilia"
-  [ -e "$dest" ] && [ ! -L "$dest" ] && die "이미 게임 폴더가 있어요: $dest"
-  mkdir -p "$DRIVE_C/Nexon"; rm -f "$dest"; ln -s "$1" "$dest"
-  echo "연결했어요: C:\\Nexon\\AzurPromilia -> $1"
+  if [ -L "$dest" ]; then rm "$dest"; fi
+  if [ -d "$dest" ] && [ -n "$(ls -A "$dest" 2>/dev/null)" ]; then die "이미 게임 폴더가 있어요: $dest"; fi
+  rmdir "$dest" 2>/dev/null || true
+  mkdir -p "$DRIVE_C/Nexon"
+  echo "게임 복제 중 (APFS 복제라 추가 공간은 거의 안 써요)…"
+  cp -cR "$1" "$dest" || { rm -rf "$dest"; die "게임을 복제하지 못했어요. 같은 APFS 디스크인지 확인해 주세요."; }
+  echo "가져왔어요: C:\\Nexon\\AzurPromilia"
 }
 
-cmd_import_crossover() { # [보틀 이름]  CrossOver 보틀에 받아 둔 게임을 다시 받지 않고 가져와요 (복사 없이 연결)
+migrate_game_link() { # 0.3.1까지 만든 링크를 따로 된 사본으로 바꿔요 (한쪽에서 지우면 둘 다 지워지는 문제)
+  local dest="$DRIVE_C/Nexon/AzurPromilia" target
+  [ -L "$dest" ] || return 0
+  target="$(readlink "$dest")"
+  rm "$dest"
+  if [ -f "$target/AzurPromilia.exe" ]; then
+    echo "게임 링크를 따로 된 사본으로 바꾸는 중…"
+    cp -cR "$target" "$dest" || mkdir -p "$dest"
+  else
+    mkdir -p "$dest"   # 링크가 끊어져 있었으면 빈 폴더로 (넥슨 플러그에서 다시 설치)
+  fi
+}
+
+cmd_import_crossover() { # [보틀 이름]  CrossOver 보틀에 받아 둔 게임을 다시 받지 않고 가져와요 (APFS 복제)
   need_prefix
   local bottle="${1:-Azur Promilia}"
   local b="$HOME/Library/Application Support/CrossOver/Bottles/$bottle"
@@ -308,6 +352,8 @@ cmd_plug() {
   [ -f "$DRIVE_C/Nexon/NexonPlug/NexonPlug.exe" ] || die "넥슨 플러그가 없어요. 먼저 ./azurctl.sh setup"
   mkdir -p "$LOG_DIR"
   fonts_current || cmd_install_fonts >/dev/null
+  mono_current || cmd_install_mono >/dev/null
+  migrate_game_link
   apply_settings
   local hud=0 dxmt_config=""
   [ "$(setting metal_hud)" = 1 ] && hud=1
@@ -315,7 +361,7 @@ cmd_plug() {
   # 넥슨 플러그 -> NGM -> 게임 순서로 켜지면서 이 환경 변수가 게임까지 이어져요.
   # shellcheck disable=SC2086
   nohup env WINEPREFIX="$PREFIX" WINEDEBUG="${WINEDEBUG:--all}" WINEMSYNC=1 WINEESYNC=1 DXMT_LOG_PATH="$LOG_DIR" \
-    DYLD_FALLBACK_LIBRARY_PATH="$WINE_DIR/lib:/usr/lib" MTL_HUD_ENABLED="$hud" DXMT_CONFIG="$dxmt_config" \
+    DYLD_FALLBACK_LIBRARY_PATH="$WINE_DIR/lib:/usr/lib" MTL_HUD_ENABLED="$hud" DXMT_CONFIG="$dxmt_config" DXMT_LOG_LEVEL="${DXMT_LOG_LEVEL:-error}" \
     "$WINE_DIR/bin/wine" 'C:\Nexon\NexonPlug\NexonPlug.exe' $GL_FLAGS >"$LOG_DIR/nexonplug.log" 2>&1 &
   echo "넥슨 플러그를 켰어요."
 }
@@ -383,7 +429,7 @@ cmd_setup() { # [--runtime-from TAR.XZ] [--webview2-from DIR] [--import-crossove
     [ -d "$PREFIX" ] && wserver -k 2>/dev/null || true   # 예전 Wine이 돌고 있으면 먼저 종료
     if [ -n "$runtime_from" ]; then cmd_install_runtime --from "$runtime_from"; else cmd_install_runtime; fi
   fi
-  say "2/6 Wine 환경 준비"; cmd_init_prefix
+  say "2/6 Wine 환경 준비"; cmd_init_prefix; mono_current || cmd_install_mono
   if [ -z "$(webview2_version)" ]; then
     say "3/6 WebView2 런타임 (NGM에 필요)"
     if [ -n "$wv2_from" ]; then cmd_install_webview2 --from "$wv2_from"; else cmd_install_webview2; fi
@@ -400,7 +446,7 @@ cmd_setup() { # [--runtime-from TAR.XZ] [--webview2-from DIR] [--import-crossove
 
 sub="${1:-status}"; shift || true
 case "$sub" in
-  setup|install-runtime|init-prefix|install-webview2|install-plug|install-ngm|configure|link-game|import-crossover|plug|game-direct|stop|status|status-code|detect-sources|winecfg|shell|settings|get|set|running|install-fonts)
+  setup|install-runtime|init-prefix|install-webview2|install-plug|install-ngm|configure|link-game|import-crossover|plug|game-direct|stop|status|status-code|detect-sources|winecfg|shell|settings|get|set|running|install-fonts|install-mono)
     "cmd_${sub//-/_}" "$@" ;;
   *) sed -n '2,12p' "$0"; exit 1 ;;
 esac

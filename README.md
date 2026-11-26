@@ -54,7 +54,7 @@ open "dist/Azur Promilia Launcher.app"
    - 이 버전으로 고정되게 자동 업데이트를 꺼요.
 3. 넥슨 공식 서버에서 넥슨 플러그와 NGM을 받아요.
 4. 검은 화면 방지와 창 설정을 적용해요.
-5. CrossOver의 `Azur Promilia` 보틀이 있으면 WebView2를 받지 않고 거기서 복사하고, 받아 둔 게임도 다시 받지 않고 연결해요.
+5. CrossOver의 `Azur Promilia` 보틀이 있으면 WebView2를 받지 않고 거기서 복사하고, 받아 둔 게임도 다시 받지 않고 APFS 복제로 가져와요 (추가 공간은 거의 안 써요).
 
 **두 번째부터는** 앱을 열면 넥슨 플러그가 바로 켜져요.
 
@@ -90,7 +90,7 @@ open "dist/Azur Promilia Launcher.app"
 | `./azurctl.sh plug` | 넥슨 플러그를 켜요 |
 | `./azurctl.sh stop` | 이 런처의 Wine 프로세스를 모두 종료해요 |
 | `./azurctl.sh status` | 설치 상태를 보여줘요 |
-| `./azurctl.sh import-crossover [보틀]` | CrossOver 보틀에 받아 둔 게임을 연결해요 (복사 없음) |
+| `./azurctl.sh import-crossover [보틀]` | CrossOver 보틀에 받아 둔 게임을 APFS 복제로 가져와요 |
 | `./azurctl.sh game-direct` | 넥슨 플러그 없이 게임 실행 파일만 켜 봐요 (그래픽·보안 모듈 확인용) |
 
 ## 알려진 문제
@@ -108,8 +108,9 @@ open "dist/Azur Promilia Launcher.app"
 - **키보드 입력 (예전 버전)**
   - 예전 런타임에서는 맥 한글 입력기가 제대로 동작하지 않았어요.
   - 지금 런타임(CrossOver 26.3 소스 빌드)에서는 넥슨 플러그에서 한글과 영문 입력이 모두 잘 돼요.
-- **CrossOver에서 가져온 게임**
-  - 복사가 아니라 연결이에요. CrossOver 보틀을 지우면 게임도 같이 사라져요.
+- **CrossOver에서 가져온 게임 (예전 버전 주의)**
+  - 0.3.1까지는 게임을 링크로 연결해서, 한쪽에서 게임을 지우면 다른 쪽 게임까지 지워졌어요.
+  - 지금은 APFS 복제로 따로 된 사본을 만들어서, 한쪽을 지워도 다른 쪽은 남아요.
 - **넥슨 플러그 창 표시**
   - 소프트웨어 렌더링 옵션(`--use-gl=swiftshader --use-angle=swiftshader --in-process-gpu`)으로 켜요. 그래야 화면이 나와요.
 
