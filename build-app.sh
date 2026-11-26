@@ -5,7 +5,7 @@
 # 필요한 것: Xcode 명령줄 도구 (xcode-select --install)
 set -euo pipefail
 
-VERSION="0.3.2"
+VERSION="0.3.3"
 DIR="$(cd "$(dirname "$0")" && pwd)"
 OUT="${1:-$DIR/dist/Azur Promilia Launcher.app}"
 EXE="AzurPromiliaLauncher"
@@ -21,13 +21,16 @@ swiftc -O -parse-as-library -swift-version 5 \
 cp "$DIR/azurctl.sh" "$DIR/extract_zip.py" "$DIR/rename_font.py" "$OUT/Contents/Resources/"
 chmod +x "$OUT/Contents/Resources/azurctl.sh"
 
-# 개인 아이콘 (선택): app/local-icon.png가 있으면 앱 아이콘으로 써요. 저장소와 릴리스에는 들어가지 않아요.
+# 아이콘: app/local-icon.png(개인용, 저장소에 안 올라감)가 있으면 그걸, 없으면 공개용 app/icon.png를 써요.
+# 릴리스용으로 빌드할 때는 PUBLIC_ICON=1 로 개인 아이콘을 무시해요.
 ICON_KEY=""
-if [ -f "$DIR/app/local-icon.png" ]; then
+ICON_SRC="$DIR/app/icon.png"
+[ -f "$DIR/app/local-icon.png" ] && [ "${PUBLIC_ICON:-0}" != 1 ] && ICON_SRC="$DIR/app/local-icon.png"
+if [ -f "$ICON_SRC" ]; then
   ISET="$(mktemp -d)/AppIcon.iconset"; mkdir -p "$ISET"
   for sz in 16 32 128 256 512; do
-    sips -z $sz $sz "$DIR/app/local-icon.png" --out "$ISET/icon_${sz}x${sz}.png" >/dev/null
-    sips -z $((sz*2)) $((sz*2)) "$DIR/app/local-icon.png" --out "$ISET/icon_${sz}x${sz}@2x.png" >/dev/null
+    sips -z $sz $sz "$ICON_SRC" --out "$ISET/icon_${sz}x${sz}.png" >/dev/null
+    sips -z $((sz*2)) $((sz*2)) "$ICON_SRC" --out "$ISET/icon_${sz}x${sz}@2x.png" >/dev/null
   done
   iconutil -c icns "$ISET" -o "$OUT/Contents/Resources/AppIcon.icns" && ICON_KEY="<key>CFBundleIconFile</key><string>AppIcon</string>"
   rm -rf "$(dirname "$ISET")"
