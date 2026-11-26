@@ -31,6 +31,7 @@ final class LauncherModel: ObservableObject {
     @Published var metalHud = false
     @Published var retina = false
     @Published var leftCmdCtrl = false
+    @Published var gameHangul = true
     @Published var customResolution = false
     @Published var width = "1920"
     @Published var height = "1200"
@@ -196,6 +197,7 @@ final class LauncherModel: ObservableObject {
         metalHud = kv["metal_hud"] == "1"
         retina = kv["retina"] == "1"
         leftCmdCtrl = kv["left_cmd_ctrl"] == "1"
+        gameHangul = kv["game_hangul"] != "0"
         customResolution = kv["custom_resolution"] == "1"
         customFps = kv["custom_fps"] == "1"
         width = kv["width"] ?? "1920"
@@ -406,6 +408,9 @@ struct SettingsSection: View {
             option("Metal HUD", "게임 화면 위에 FPS와 GPU 정보를 표시해요.", $m.metalHud) { m.save("metal_hud", $0) }
             option("Retina 모드", "맥 화면의 원래 해상도로 그려요. 선명하지만 훨씬 무거워져요.", $m.retina) { m.save("retina", $0) }
             option("왼쪽 CMD를 CTRL로 할당", "왼쪽 ⌘ 키를 Ctrl 키로 써요.", $m.leftCmdCtrl) { m.save("left_cmd_ctrl", $0) }
+            option("게임 안 한글 입력",
+                   "맥 입력 소스가 한국어일 때 게임 채팅에 완성된 한글을 넣어요. 조합 중인 글자는 다음 글자를 칠 때 나타나요. 끄면 한국어 입력 소스에서도 영문이 쳐져요.",
+                   $m.gameHangul) { m.save("game_hangul", $0) }
 
             VStack(alignment: .leading, spacing: 6) {
                 option("사용자 정의 해상도", "켜 두면 넥슨 플러그를 켤 때마다 게임 해상도를 이 값으로 맞춰요.", $m.customResolution) {

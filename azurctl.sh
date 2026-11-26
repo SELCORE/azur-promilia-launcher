@@ -305,9 +305,9 @@ cmd_import_crossover() { # [보틀 이름]  CrossOver 보틀에 받아 둔 게�
 
 # ---- 설정 (settings.conf, key=value) ----
 SETTINGS="$APP_HOME/settings.conf"
-SETTING_KEYS="metal_hud retina left_cmd_ctrl custom_resolution width height custom_fps fps"
+SETTING_KEYS="metal_hud retina left_cmd_ctrl game_hangul custom_resolution width height custom_fps fps"
 setting_default() {
-  case "$1" in width) echo 1920 ;; height) echo 1200 ;; fps) echo 60 ;; *) echo 0 ;; esac
+  case "$1" in width) echo 1920 ;; height) echo 1200 ;; fps) echo 60 ;; game_hangul) echo 1 ;; *) echo 0 ;; esac
 }
 setting() { # key
   local v; v="$(grep -E "^$1=" "$SETTINGS" 2>/dev/null | tail -1 | cut -d= -f2-)" || true
@@ -318,7 +318,7 @@ cmd_get() { setting "${1:?설정 이름}"; }
 cmd_set() { # key value
   local k="${1:?설정 이름}" v="${2:?값}"
   case "$k" in
-    metal_hud|retina|left_cmd_ctrl|custom_resolution|custom_fps) [[ "$v" =~ ^[01]$ ]] || die "$k 는 0 또는 1이에요." ;;
+    metal_hud|retina|left_cmd_ctrl|game_hangul|custom_resolution|custom_fps) [[ "$v" =~ ^[01]$ ]] || die "$k 는 0 또는 1이에요." ;;
     width|height) [[ "$v" =~ ^[0-9]{3,5}$ ]] && [ "$v" -ge 640 ] || die "$k 는 640 이상의 숫자예요." ;;
     fps) [[ "$v" =~ ^[0-9]{2,3}$ ]] && [ "$v" -ge 30 ] || die "fps 는 30 이상의 숫자예요." ;;
     *) die "알 수 없는 설정: $k" ;;
@@ -344,6 +344,9 @@ apply_settings() { # 넥슨 플러그를 켜기 직전에 적용해요 (게임�
   disable_nexon_launcher_service
   reg_add 'HKCU\Software\Wine\Mac Driver' /v RetinaMode /t REG_SZ /d "$(yn "$(setting retina)")"
   reg_add 'HKCU\Software\Wine\Mac Driver' /v LeftCommandIsCtrl /t REG_SZ /d "$(yn "$(setting left_cmd_ctrl)")"
+  # 게임은 자기 창의 IME를 꺼 둬서 맥 한글 입력기가 조합을 못 해요. 런타임(p2 이상)의 ImeFallback이
+  # 게임 창의 키를 맥 입력기에 먼저 보내고 완성된 글자를 게임에 넘겨요. 넥슨 플러그에는 영향이 없어요.
+  reg_add 'HKCU\Software\Wine\AppDefaults\AzurPromilia.exe\Mac Driver' /v ImeFallback /t REG_SZ /d "$(yn "$(setting game_hangul)")"
   local k='HKCU\Software\manjuu\AzurPromilia'   # 게임(Unity)이 화면 설정을 저장하는 곳
   if [ "$(setting custom_resolution)" = 1 ]; then
     reg_add "$k" /v 'Screenmanager Resolution Width_h182942802' /t REG_DWORD /d "$(setting width)"

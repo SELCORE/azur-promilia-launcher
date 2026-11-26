@@ -18,7 +18,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 CX_VER="${CX_VER:-26.3.0}"
 DXMT_VER="${DXMT_VER:-v0.80}"
-PATCH_REV="${PATCH_REV:-p1}"   # bump when runtime/patches changes
+PATCH_REV="${PATCH_REV:-p2}"   # bump when runtime/patches changes
 WORK="${WORK:-$PWD/runtime-work}"
 JOBS="${JOBS:-$(sysctl -n hw.ncpu)}"
 SRC_URL="https://media.codeweavers.com/pub/crossover/source/crossover-sources-${CX_VER}.tar.gz"
@@ -32,13 +32,26 @@ export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-13.0}"
 
 say() { printf '\n==> %s\n' "$*"; }
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+# configure/libtool break on paths with spaces (e.g. ~/Library/Application Support).
+case "$WORK" in *" "*) die "WORK must not contain spaces: $WORK (try WORK=\$HOME/azur-runtime-build)";; esac
+
+# Download with resume and retries; keeps a .part file until complete. Extra URLs are mirrors.
+fetch_url() { # out url [mirror...]
+  local out="$1" u; shift
+  [ -f "$out" ] && return 0
+  for u in "$@"; do
+    curl -fL --retry 5 --retry-all-errors --retry-delay 3 -C - -o "$out.part" "$u" && { mv "$out.part" "$out"; return 0; }
+    echo "download failed from $u, trying next" >&2
+  done
+  die "could not download ${out##*/}"
+}
 
 # Official source releases of the x86_64 libraries (name|url|sha256 checked after download is printed)
 LIB_SOURCES="
 gmp|https://ftp.gnu.org/gnu/gmp/gmp-6.3.0.tar.xz
 nettle|https://ftp.gnu.org/gnu/nettle/nettle-3.10.1.tar.gz
-gnutls|https://www.gnupg.org/ftp/gcrypt/gnutls/v3.8/gnutls-3.8.9.tar.xz
-freetype|https://download.savannah.gnu.org/releases/freetype/freetype-2.13.3.tar.xz
+gnutls|https://www.gnupg.org/ftp/gcrypt/gnutls/v3.8/gnutls-3.8.9.tar.xz|https://mirrors.dotsrc.org/gcrypt/gnutls/v3.8/gnutls-3.8.9.tar.xz
+freetype|https://download.savannah.gnu.org/releases/freetype/freetype-2.13.3.tar.xz|https://downloads.sourceforge.net/project/freetype/freetype2/2.13.3/freetype-2.13.3.tar.xz
 "
 
 x86_env() {
@@ -49,11 +62,13 @@ x86_env() {
 
 build_lib() { # name  (configure args follow)
   local name="$1"; shift
-  local url; url="$(printf '%s\n' "$LIB_SOURCES" | awk -F'|' -v n="$name" '$1==n{print $2}')"
+  local urls; urls="$(printf '%s\n' "$LIB_SOURCES" | awk -F'|' -v n="$name" '$1==n{for(i=2;i<=NF;i++)print $i}')"
+  local url="${urls%%$'\n'*}"
   local tarball="$WORK/dl/${url##*/}" dir="$WORK/libsrc/$name"
   [ -f "$X86/.done-$name" ] && { echo "$name: already built"; return 0; }
   mkdir -p "$WORK/dl" "$WORK/libsrc"
-  [ -f "$tarball" ] || curl -fL --retry 3 -o "$tarball" "$url"
+  # shellcheck disable=SC2086
+  fetch_url "$tarball" $urls
   echo "$name source sha256: $(shasum -a 256 "$tarball" | cut -d' ' -f1)"
   rm -rf "$dir"; mkdir -p "$dir"; tar -xf "$tarball" -C "$dir" --strip-components 1
   say "Building $name (x86_64)"
@@ -82,7 +97,7 @@ cmd_deps() {
 cmd_fetch() {
   mkdir -p "$WORK"
   local tgz="$WORK/crossover-sources-${CX_VER}.tar.gz"
-  [ -f "$tgz" ] || { say "Downloading $SRC_URL"; curl -fL --retry 3 -o "$tgz" "$SRC_URL"; }
+  [ -f "$tgz" ] || { say "Downloading $SRC_URL"; fetch_url "$tgz" "$SRC_URL"; }
   echo "crossover-sources-${CX_VER}.tar.gz sha256: $(shasum -a 256 "$tgz" | cut -d' ' -f1)"
   say "Extracting sources/wine"
   rm -rf "$SRC" "$WORK/sources"
@@ -162,7 +177,7 @@ cmd_bundle() {
 
   say "Adding DXMT $DXMT_VER (upstream release)"
   local d="$WORK/dxmt"; rm -rf "$d"; mkdir -p "$d"
-  curl -fL --retry 3 -o "$d/dxmt.tar.gz" "$DXMT_URL"
+  fetch_url "$d/dxmt.tar.gz" "$DXMT_URL"
   echo "dxmt-${DXMT_VER}-builtin.tar.gz sha256: $(shasum -a 256 "$d/dxmt.tar.gz" | cut -d' ' -f1)"
   tar -xzf "$d/dxmt.tar.gz" -C "$d"
   local root; root="$(dirname "$(find "$d" -type d -name x86_64-windows | head -1)")"
@@ -194,7 +209,7 @@ Wine:  CodeWeavers CrossOver ${CX_VER} source (LGPL-2.1-or-later), with the smal
 DXMT:  ${DXMT_VER} by Feifan He for CodeWeavers (LGPL-2.1-or-later)
        https://github.com/3Shain/dxmt/tree/${DXMT_VER}
 Bundled libraries, built from their official source releases by the same script:
-$(printf '%s\n' "$LIB_SOURCES" | awk -F'|' 'NF==2{print "  "$1": "$2}')
+$(printf '%s\n' "$LIB_SOURCES" | awk -F'|' 'NF>=2{print "  "$1": "$2}')
   (GMP, Nettle, GnuTLS: LGPL; FreeType: FreeType License)
 EOF
   say "Packing $name.tar.xz"

@@ -18,7 +18,9 @@ CrossOver 없이 무료 Wine과 DXMT로 넥슨 플러그와 아주르 프로밀�
 | CrossOver 없이 넥슨 플러그에서 게임 설치 시작 | 됨 (NGM이 WebView2를 띄우고 다운로드 시작까지 확인) |
 | 넥슨 플러그에서 게임 실행 | 됨 (오픈 당일 시작 화면 약 55fps, Metal HUD 기준) |
 | 게임 안 한글 표시 | 됨 (런처가 한글 글꼴을 넣어 줘요) |
-| 한글·영문 키보드 입력 | 됨 (자체 빌드 런타임) |
+| 한글·영문 키보드 입력 (넥슨 플러그) | 됨 (자체 빌드 런타임) |
+| 게임 단축키를 영문 자판 기준으로 표시, 게임이 맥 입력 소스를 바꾸지 않음 | 런타임 p2 |
+| 게임 채팅 한글 조합 | 런타임 p2 (IME를 끈 시험 창에서 확인, 게임 채팅은 확인 중) |
 
 게임 실행 파일은 런처를 거치지 않고 직접 켜서 확인했어요. 로그인 정보가 없어서 로그인 SDK 단계(오류 10121)에서 꺼지는 게 정상이에요. CrossOver에서도 같은 단계까지 가요.
 
@@ -120,9 +122,15 @@ open "dist/Azur Promilia Launcher.app"
 - **DXMT 초기화 중 튕김 (예전 버전)**
   - 예전 런타임(DXMT 654f547)에서는 게임을 켜자마자 `NSInvalidArgumentException` 오류로 가끔 꺼졌어요.
   - 지금 런타임(DXMT v0.80)에서는 3번 시험해서 한 번도 나지 않았어요. 다시 나면 알려 주세요.
-- **키보드 입력 (예전 버전)**
-  - 예전 런타임에서는 맥 한글 입력기가 제대로 동작하지 않았어요.
-  - 지금 런타임(CrossOver 26.3 소스 빌드)에서는 넥슨 플러그에서 한글과 영문 입력이 모두 잘 돼요.
+- **키보드 입력**
+  - 넥슨 플러그에서는 한글과 영문 입력이 모두 잘 돼요 (CrossOver 26.3 소스 빌드부터).
+  - 게임은 자기 창의 Windows IME를 꺼 둬서, 맥이 한국어 입력 상태면 자모가 떨어져 쳐지고 단축키가 ㅓ/ㅣ처럼 보였어요.
+    게임이 켜질 때 맥 입력 소스를 한국어로 바꾸기도 했어요.
+  - 런타임 p2부터 이렇게 고쳤어요 ([`runtime/patches/apply.py`](runtime/patches/apply.py)).
+    - 단축키와 키 이름은 늘 영문 자판(ABC) 기준이에요.
+    - 게임이 맥 입력 소스를 바꾸지 못해요.
+    - 게임 창의 키를 맥 한글 입력기에 먼저 보내고, 완성된 글자를 게임에 넘겨요. 조합 중인 글자는 다음 글자를 치거나 스페이스·Enter를 누를 때 나타나요.
+  - 런처 설정의 **게임 안 한글 입력**을 끄면 한국어 입력 상태에서도 게임에 영문이 쳐져요.
 - **CrossOver에서 가져온 게임 (예전 버전 주의)**
   - 0.3.1까지는 게임을 링크로 연결해서, 한쪽에서 게임을 지우면 다른 쪽 게임까지 지워졌어요.
   - 지금은 APFS 복제로 따로 된 사본을 만들어서, 한쪽을 지워도 다른 쪽은 남아요.
@@ -134,9 +142,12 @@ open "dist/Azur Promilia Launcher.app"
 GitHub Actions의 **build-runtime** 워크플로를 실행하면 Wine + DXMT 런타임이 만들어져요. 맥에서 직접 빌드하려면 이렇게 하세요.
 
 ```bash
-runtime/build-runtime.sh all    # 결과: runtime-work/out/azur-runtime-*.tar.xz
-./azurctl.sh setup --runtime-from runtime-work/out/azur-runtime-*.tar.xz
+WORK="$HOME/azur-runtime-build" runtime/build-runtime.sh all    # 결과: $HOME/azur-runtime-build/out/azur-runtime-*.tar.xz
+./azurctl.sh setup --runtime-from "$HOME"/azur-runtime-build/out/azur-runtime-*.tar.xz
 ```
+
+- `WORK` 경로에 공백이 있으면 빌드가 실패해요 (`~/Library/Application Support` 같은 곳은 피하세요).
+- 빌드한 Wine을 아주 긴 경로(약 250자)에 풀면 Wine이 바탕 화면 창을 만들지 못하고 explorer.exe를 계속 띄워요. 런처는 짧은 경로에 설치하니 상관없지만, 직접 시험할 때는 짧은 경로를 쓰세요.
 
 ## 제거
 
@@ -147,7 +158,7 @@ runtime/build-runtime.sh all    # 결과: runtime-work/out/azur-runtime-*.tar.xz
 
 ## 출처와 라이선스
 
-- **Wine:** CodeWeavers가 공개한 [CrossOver 26.3 소스](https://media.codeweavers.com/pub/crossover/source/crossover-sources-26.3.0.tar.gz)를 고치지 않고 [`runtime/build-runtime.sh`](runtime/build-runtime.sh)로 빌드해요 (LGPL).
+- **Wine:** CodeWeavers가 공개한 [CrossOver 26.3 소스](https://media.codeweavers.com/pub/crossover/source/crossover-sources-26.3.0.tar.gz)에 작은 키보드 패치([`runtime/patches/apply.py`](runtime/patches/apply.py))만 넣어 [`runtime/build-runtime.sh`](runtime/build-runtime.sh)로 빌드해요 (LGPL).
 - **DXMT:** [3Shain/dxmt v0.80](https://github.com/3Shain/dxmt/releases/tag/v0.80) 공식 릴리스를 넣어요 (CodeWeavers의 Feifan He 제작, LGPL).
 - **라이브러리:** GMP, Nettle, GnuTLS, FreeType을 각 공식 소스 릴리스에서 같은 스크립트로 빌드해 넣어요. 정확한 출처는 런타임 안의 `SOURCES.txt`에 있어요.
 - **이 저장소:** 스크립트는 MIT 라이선스예요. 넥슨, 넥슨 플러그, 아주르 프로밀리아는 각 권리자의 상표이자 저작물이에요.
