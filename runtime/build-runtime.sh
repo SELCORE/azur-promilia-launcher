@@ -11,14 +11,15 @@
 #     Homebrew no longer installs x86_64 packages on Apple Silicon, so `deps` builds them from
 #     their official source releases into $WORK/x86.
 #
-# Usage: runtime/build-runtime.sh deps|fetch|configure|build|bundle|package|all
+# Usage: runtime/build-runtime.sh deps|fetch|configure|build|dxmt|bundle|package|all
+#        runtime/build-runtime.sh dxmt && runtime/build-runtime.sh repack <runtime .tar.xz>
 # Env:   CX_VER (default 26.3.0), DXMT_VER (default v0.80), WORK (default ./runtime-work), JOBS
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 CX_VER="${CX_VER:-26.3.0}"
 DXMT_VER="${DXMT_VER:-v0.80}"
-PATCH_REV="${PATCH_REV:-p5}"   # bump when runtime/patches changes
+PATCH_REV="${PATCH_REV:-p6}"   # bump when runtime/patches changes
 WORK="${WORK:-$PWD/runtime-work}"
 JOBS="${JOBS:-$(sysctl -n hw.ncpu)}"
 SRC_URL="https://media.codeweavers.com/pub/crossover/source/crossover-sources-${CX_VER}.tar.gz"
@@ -175,6 +176,13 @@ cmd_bundle() {
   find "$DIST/lib" -maxdepth 1 -name '*.dylib' -exec codesign --force --sign - {} \; 2>/dev/null
   ls "$DIST/lib"/*.dylib | xargs -n1 basename
 
+  add_dxmt_upstream
+  add_dxmt_patched
+}
+
+# DXMT: the upstream release (32-bit DLLs, nvapi64, nvngx), then our patched 64-bit build on top
+# (cmd_dxmt, runtime/patches/dxmt-apply.py), which fixes GPU hangs that froze macOS.
+add_dxmt_upstream() {
   say "Adding DXMT $DXMT_VER (upstream release)"
   local d="$WORK/dxmt"; rm -rf "$d"; mkdir -p "$d"
   fetch_url "$d/dxmt.tar.gz" "$DXMT_URL"
@@ -196,6 +204,65 @@ cmd_bundle() {
   ls "$root"/x86_64-windows
 }
 
+add_dxmt_patched() {
+  local own="$WORK/dxmt-install" f
+  [ -f "$own/x86_64-unix/winemetal.so" ] || die "patched DXMT missing: run '$0 dxmt' first"
+  say "Adding patched DXMT build (runtime/patches/dxmt-apply.py)"
+  for f in "$own"/x86_64-windows/*.dll; do cp "$f" "$DIST/lib/wine/x86_64-windows/"; basename "$f"; done
+  cp "$own/x86_64-unix/winemetal.so" "$DIST/lib/wine/x86_64-unix/winemetal.so"
+}
+
+# Build DXMT $DXMT_VER from source with runtime/patches/dxmt-apply.py (64-bit DLLs + winemetal.so).
+# Needs Xcode with the Metal toolchain (xcodebuild -downloadComponent MetalToolchain), meson,
+# ninja, cmake, mingw-w64, and a Wine install with headers and import libraries ($DIST after
+# `build`, or DXMT_WINE=<dir>, e.g. an unpacked runtime).
+cmd_dxmt() {
+  local xcode="${DXMT_XCODE:-/Applications/Xcode.app/Contents/Developer}" wine="${DXMT_WINE:-$DIST}"
+  local src="$WORK/dxmt-src" llvm="$WORK/llvm-darwin"
+  [ -f "$wine/lib/wine/x86_64-windows/libwinecrt0.a" ] || die "no Wine import libraries in $wine (set DXMT_WINE)"
+  DEVELOPER_DIR="$xcode" xcrun -sdk macosx metal --version >/dev/null 2>&1 \
+    || die "Metal compiler not usable: accept the Xcode license and run xcodebuild -downloadComponent MetalToolchain"
+  "$ARM_BREW" install cmake ninja meson
+  export PATH="$(dirname "$ARM_BREW"):$PATH"
+  if [ ! -f "$llvm/lib/libLLVMCore.a" ]; then
+    say "Building LLVM 15.0.7 (x86_64) for DXMT"
+    [ -d "$WORK/llvm-project" ] || git clone -q --depth 1 --branch llvmorg-15.0.7 https://github.com/llvm/llvm-project.git "$WORK/llvm-project"
+    cmake -B "$WORK/llvm-build" -S "$WORK/llvm-project/llvm" -DCMAKE_INSTALL_PREFIX="$llvm" \
+      -DCMAKE_OSX_ARCHITECTURES=x86_64 -DLLVM_HOST_TRIPLE=x86_64-apple-darwin -DLLVM_ENABLE_ASSERTIONS=On \
+      -DLLVM_ENABLE_ZSTD=Off -DCMAKE_BUILD_TYPE=Release -DLLVM_TARGETS_TO_BUILD="" -DLLVM_BUILD_TOOLS=Off \
+      -DLLVM_INCLUDE_TESTS=Off -DLLVM_INCLUDE_BENCHMARKS=Off -DLLVM_INCLUDE_EXAMPLES=Off \
+      -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -G Ninja > "$WORK/llvm-cmake.log" 2>&1 || die "LLVM configure failed"
+    cmake --build "$WORK/llvm-build" > "$WORK/llvm-build.log" 2>&1 || { tail -20 "$WORK/llvm-build.log"; die "LLVM build failed"; }
+    cmake --install "$WORK/llvm-build" > /dev/null
+  fi
+  say "Building DXMT $DXMT_VER with runtime/patches/dxmt-apply.py"
+  # DXMT itself needs macOS 14 (Sonoma) and uses C++ library features from macOS 13.3.
+  export MACOSX_DEPLOYMENT_TARGET=14.0
+  rm -rf "$src"
+  git clone -q --depth 1 --branch "$DXMT_VER" --recurse-submodules --shallow-submodules https://github.com/3Shain/dxmt.git "$src"
+  python3 -I "$HERE/patches/dxmt-apply.py" "$src"
+  rm -rf "$WORK/dxmt-install"
+  ( cd "$src" \
+    && meson setup --cross-file build-win64.txt -Dnative_llvm_path="$llvm" -Dwine_install_path="$wine" \
+         build64 --buildtype release --prefix "$WORK/dxmt-install" --strip > "$WORK/dxmt-meson.log" 2>&1 \
+    && DEVELOPER_DIR="$xcode" ninja -C build64 > "$WORK/dxmt-build.log" 2>&1 \
+    && DEVELOPER_DIR="$xcode" meson install -C build64 > /dev/null 2>&1 ) \
+    || { tail -30 "$WORK/dxmt-build.log" 2>/dev/null; die "DXMT build failed (logs in $WORK)"; }
+  find "$WORK/dxmt-install" -name '*.dll.a' -delete
+  ls "$WORK/dxmt-install"/x86_64-windows "$WORK/dxmt-install"/x86_64-unix
+}
+
+# Re-package an existing runtime with the current DXMT (no Wine rebuild): repack <runtime .tar.xz>
+cmd_repack() {
+  local base="${1:?usage: repack <runtime .tar.xz>}"
+  say "Unpacking $base"
+  rm -rf "$WORK/dist"; mkdir -p "$WORK/dist"
+  tar -xJf "$base" -C "$WORK/dist"
+  [ -x "$DIST/bin/wine" ] || die "no wine/ in $base"
+  add_dxmt_patched   # the base runtime already has the upstream DXMT files
+  cmd_package
+}
+
 cmd_package() {
   [ -x "$DIST/bin/wine" ] || die "run build first"
   local name="azur-runtime-cx${CX_VER}-dxmt${DXMT_VER#v}-${PATCH_REV}" out="$WORK/out"
@@ -208,6 +275,8 @@ Wine:  CodeWeavers CrossOver ${CX_VER} source (LGPL-2.1-or-later), with the smal
        ${SRC_URL}
 DXMT:  ${DXMT_VER} by Feifan He for CodeWeavers (LGPL-2.1-or-later)
        https://github.com/3Shain/dxmt/tree/${DXMT_VER}
+       64-bit DLLs and winemetal.so built from that source with the GPU hang fixes in
+       runtime/patches/dxmt-apply.py; 32-bit DLLs, nvapi64 and nvngx from the upstream release
 Bundled libraries, built from their official source releases by the same script:
 $(printf '%s\n' "$LIB_SOURCES" | awk -F'|' 'NF>=2{print "  "$1": "$2}')
   (GMP, Nettle, GnuTLS: LGPL; FreeType: FreeType License)
@@ -220,7 +289,7 @@ EOF
 
 case "${1:-all}" in
   deps) cmd_deps ;; fetch) cmd_fetch ;; configure) cmd_configure ;; build) cmd_build ;;
-  bundle) cmd_bundle ;; package) cmd_package ;;
-  all) cmd_deps; cmd_fetch; cmd_configure; cmd_build; cmd_bundle; cmd_package ;;
+  bundle) cmd_bundle ;; package) cmd_package ;; dxmt) cmd_dxmt ;; repack) shift; cmd_repack "$@" ;;
+  all) cmd_deps; cmd_fetch; cmd_configure; cmd_build; cmd_dxmt; cmd_bundle; cmd_package ;;
   *) sed -n '2,14p' "$0"; exit 1 ;;
 esac
