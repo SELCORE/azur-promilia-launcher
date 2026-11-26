@@ -32,6 +32,7 @@ final class LauncherModel: ObservableObject {
     @Published var retina = false
     @Published var leftCmdCtrl = false
     @Published var gameHangul = true
+    @Published var gameMode = true
     @Published var customResolution = false
     @Published var width = "1920"
     @Published var height = "1200"
@@ -198,6 +199,7 @@ final class LauncherModel: ObservableObject {
         retina = kv["retina"] == "1"
         leftCmdCtrl = kv["left_cmd_ctrl"] == "1"
         gameHangul = kv["game_hangul"] != "0"
+        gameMode = kv["game_mode"] != "0"
         customResolution = kv["custom_resolution"] == "1"
         customFps = kv["custom_fps"] == "1"
         width = kv["width"] ?? "1920"
@@ -411,6 +413,9 @@ struct SettingsSection: View {
             option("게임 안 한글 입력",
                    "맥 입력 소스가 한국어일 때 게임 채팅에 완성된 한글을 넣어요. 조합 중인 글자는 다음 글자를 칠 때 나타나요. 끄면 한국어 입력 소스에서도 영문이 쳐져요.",
                    $m.gameHangul) { m.save("game_hangul", $0) }
+            option("macOS 게임 모드",
+                   "게임을 macOS가 게임으로 알아보게 해서, 전체 화면일 때 게임 모드(CPU·GPU 우선, 백그라운드 작업 줄이기)를 받아요. 넥슨 플러그를 다시 켜면 적용돼요.",
+                   $m.gameMode) { m.save("game_mode", $0) }
 
             VStack(alignment: .leading, spacing: 6) {
                 option("사용자 정의 해상도", "켜 두면 넥슨 플러그를 켤 때마다 게임 해상도를 이 값으로 맞춰요.", $m.customResolution) {

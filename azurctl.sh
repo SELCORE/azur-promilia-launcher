@@ -22,10 +22,10 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # Wine + DXMT 런타임: CodeWeavers가 공개한 CrossOver 소스로 이 저장소의 GitHub Actions에서 직접 빌드하고
 # DXMT 공식 릴리스를 넣은 것이에요 (runtime/build-runtime.sh). 이 저장소의 릴리스에서 받아요.
-RUNTIME_TAG="runtime-cx26.3.0-dxmt0.80-p3"
-RUNTIME_NAME="azur-runtime-cx26.3.0-dxmt0.80-p3"
+RUNTIME_TAG="runtime-cx26.3.0-dxmt0.80-p4"
+RUNTIME_NAME="azur-runtime-cx26.3.0-dxmt0.80-p4"
 RUNTIME_URL="https://github.com/SELCORE/azur-promilia-launcher/releases/download/$RUNTIME_TAG/$RUNTIME_NAME.tar.xz"
-RUNTIME_SHA256="996d032398fefe2258d3e832f38e66ae014cb0d710b3c4a199e4a4096922e76c"
+RUNTIME_SHA256="355f17ba50ea7fab34c55c2af10cdc30d288da9c777452f93334eef159be528f"
 
 PLUG_URL="https://platform.nexon.com/NexonPlug/Install/InstallData/65538.z00"
 NGM_URL="https://platform.nexon.com/NGM/Bin"
@@ -305,9 +305,9 @@ cmd_import_crossover() { # [보틀 이름]  CrossOver 보틀에 받아 둔 게�
 
 # ---- 설정 (settings.conf, key=value) ----
 SETTINGS="$APP_HOME/settings.conf"
-SETTING_KEYS="metal_hud retina left_cmd_ctrl game_hangul custom_resolution width height custom_fps fps"
+SETTING_KEYS="metal_hud retina left_cmd_ctrl game_hangul game_mode custom_resolution width height custom_fps fps"
 setting_default() {
-  case "$1" in width) echo 1920 ;; height) echo 1200 ;; fps) echo 60 ;; game_hangul) echo 1 ;; *) echo 0 ;; esac
+  case "$1" in width) echo 1920 ;; height) echo 1200 ;; fps) echo 60 ;; game_hangul|game_mode) echo 1 ;; *) echo 0 ;; esac
 }
 setting() { # key
   local v; v="$(grep -E "^$1=" "$SETTINGS" 2>/dev/null | tail -1 | cut -d= -f2-)" || true
@@ -318,7 +318,7 @@ cmd_get() { setting "${1:?설정 이름}"; }
 cmd_set() { # key value
   local k="${1:?설정 이름}" v="${2:?값}"
   case "$k" in
-    metal_hud|retina|left_cmd_ctrl|game_hangul|custom_resolution|custom_fps) [[ "$v" =~ ^[01]$ ]] || die "$k 는 0 또는 1이에요." ;;
+    metal_hud|retina|left_cmd_ctrl|game_hangul|game_mode|custom_resolution|custom_fps) [[ "$v" =~ ^[01]$ ]] || die "$k 는 0 또는 1이에요." ;;
     width|height) [[ "$v" =~ ^[0-9]{3,5}$ ]] && [ "$v" -ge 640 ] || die "$k 는 640 이상의 숫자예요." ;;
     fps) [[ "$v" =~ ^[0-9]{2,3}$ ]] && [ "$v" -ge 30 ] || die "fps 는 30 이상의 숫자예요." ;;
     *) die "알 수 없는 설정: $k" ;;
@@ -370,10 +370,15 @@ cmd_plug() {
   local hud=0 dxmt_config=""
   [ "$(setting metal_hud)" = 1 ] && hud=1
   [ "$(setting custom_fps)" = 1 ] && dxmt_config="d3d11.preferredMaxFrameRate=$(setting fps);"
+  # 런타임 p4부터 Windows 프로그램을 각자 작은 앱 번들(게임 분류)로 실행해서 macOS 게임 모드를 받을 수 있어요.
+  # 설정에서 끄면 예전처럼 실행해요.
+  local no_bundle=""
+  [ "$(setting game_mode)" = 1 ] || no_bundle=1
   # 넥슨 플러그 -> NGM -> 게임 순서로 켜지면서 이 환경 변수가 게임까지 이어져요.
   # shellcheck disable=SC2086
   nohup env WINEPREFIX="$PREFIX" WINEDEBUG="${WINEDEBUG:--all}" WINEMSYNC=1 WINEESYNC=1 DXMT_LOG_PATH="$LOG_DIR" \
     DYLD_FALLBACK_LIBRARY_PATH="$WINE_DIR/lib:/usr/lib" MTL_HUD_ENABLED="$hud" DXMT_CONFIG="$dxmt_config" DXMT_LOG_LEVEL="${DXMT_LOG_LEVEL:-error}" \
+    ${no_bundle:+AZUR_NO_APP_BUNDLE=1} \
     "$WINE_DIR/bin/wine" 'C:\Nexon\NexonPlug\NexonPlug.exe' $GL_FLAGS >"$LOG_DIR/nexonplug.log" 2>&1 &
   echo "넥슨 플러그를 켰어요."
 }

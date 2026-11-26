@@ -18,7 +18,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 CX_VER="${CX_VER:-26.3.0}"
 DXMT_VER="${DXMT_VER:-v0.80}"
-PATCH_REV="${PATCH_REV:-p3}"   # bump when runtime/patches changes
+PATCH_REV="${PATCH_REV:-p4}"   # bump when runtime/patches changes
 WORK="${WORK:-$PWD/runtime-work}"
 JOBS="${JOBS:-$(sysctl -n hw.ncpu)}"
 SRC_URL="https://media.codeweavers.com/pub/crossover/source/crossover-sources-${CX_VER}.tar.gz"

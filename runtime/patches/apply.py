@@ -33,6 +33,18 @@ Running it again on an already patched tree is fine: patches that are already in
    Auto-repeats of letters the input method used (holding a movement key) skip the input
    method, and whether an input method is active is remembered until the input source
    changes, so held keys cost no round trips to the Cocoa main thread (p3).
+
+4. game-mode (loader/wine_info.plist.in)
+   Wine's loader embeds an Info.plist in its binary, and macOS takes the app category from it.
+   Add LSApplicationCategoryType = public.app-category.games and LSSupportsGameMode so macOS can
+   turn Game Mode on (CPU/GPU priority for the game, less background work) in full screen (p4).
+   macOS ignores this embedded plist when registering the process, so see 5 as well.
+
+5. app-bundle (dlls/ntdll/unix/loader.c)
+   Start every Windows program from <TMPDIR>/winetemp-.../<name>.exe.app/Contents/MacOS/<name>.exe,
+   a hard link to the loader inside a small app bundle with an Info.plist (game category,
+   LSSupportsGameMode) and an ntdll.so link. macOS then registers it as an app named after the
+   .exe and marked as a game. Set AZUR_NO_APP_BUNDLE=1 to start programs the old way (p4).
 """
 import os
 import sys
@@ -371,5 +383,138 @@ patch("dlls/win32u/message.c", "ime-fallback no char",
       "    if (msg->message != WM_KEYDOWN && msg->message != WM_SYSKEYDOWN) return TRUE;\n\n"
       "    /* azur-promilia-launcher ime-fallback: winemac.drv already sent this key's text */\n"
       "    if (NtUserGetThreadInfo()->message_extra == 0x415a5552 && msg->wParam != VK_PACKET) return TRUE;\n\n")
+
+# ---------------------------------------------------------------- 4. game-mode
+# The loader carries an Info.plist inside its binary (__TEXT,__info_plist); macOS reads the app's
+# category from it. Mark Wine processes as games so macOS Game Mode can turn on in full screen.
+patch("loader/wine_info.plist.in", "game-mode category",
+      "    <key>LSUIElement</key>\n",
+      "    <key>LSApplicationCategoryType</key>\n"
+      "    <string>public.app-category.games</string><!-- azur-promilia-launcher: macOS Game Mode -->\n"
+      "    <key>LSSupportsGameMode</key>\n"
+      "    <true/>\n"
+      "    <key>LSUIElement</key>\n")
+
+# ---------------------------------------------------------------- 5. app-bundle
+# CrossOver starts each Windows program through a hard link to the loader named after the .exe
+# (CW HACK 22144), but only when WINEDLLPATH is set, and the link is a bare file, so macOS
+# (LaunchServices) registers the process with no bundle at all and can't tell it's a game.
+# Put the link inside a small app bundle with its own Info.plist (game category, Game Mode) and
+# an ntdll.so link next to it so the loader still finds ntdll, and always use it.
+patch("dlls/ntdll/unix/loader.c", "app-bundle link",
+      """static char *create_preloader_link(const char *wineloader_path, const char *exe_name)
+{
+    struct stat st;
+    char *linkpath = create_tempdir(wineloader_path);
+
+    if (!linkpath)
+        return NULL;
+
+    if (strlcat(linkpath, exe_name, MAX_PATH) >= MAX_PATH)
+        goto fail;
+
+    /* If the link already exists, use it (if it's in this dir, it points to the right place). */
+    if (!stat(linkpath, &st))
+        return linkpath;
+""",
+      """/* azur-promilia-launcher app-bundle: see runtime/patches/apply.py */
+static void azur_write_bundle_plist(const char *path, const char *name)
+{
+    char *tmp = NULL;
+    FILE *f;
+
+    if (asprintf(&tmp, "%s.%d", path, (int)getpid()) < 0) return;
+    if ((f = fopen(tmp, "w")))
+    {
+        fprintf(f, "<?xml version=\\"1.0\\" encoding=\\"UTF-8\\"?>\\n"
+                   "<!DOCTYPE plist PUBLIC \\"-//Apple//DTD PLIST 1.0//EN\\" \\"http://www.apple.com/DTDs/PropertyList-1.0.dtd\\">\\n"
+                   "<plist version=\\"1.0\\">\\n<dict>\\n"
+                   "    <key>CFBundleExecutable</key>\\n    <string>%s</string>\\n"
+                   "    <key>CFBundleIdentifier</key>\\n    <string>io.github.selcore.azur-wine.%s</string>\\n"
+                   "    <key>CFBundleName</key>\\n    <string>%s</string>\\n"
+                   "    <key>CFBundleInfoDictionaryVersion</key>\\n    <string>6.0</string>\\n"
+                   "    <key>CFBundlePackageType</key>\\n    <string>APPL</string>\\n"
+                   "    <key>NSPrincipalClass</key>\\n    <string>WineApplication</string>\\n"
+                   "    <key>LSApplicationCategoryType</key>\\n    <string>public.app-category.games</string>\\n"
+                   "    <key>LSSupportsGameMode</key>\\n    <true/>\\n"
+                   "    <key>LSUIElement</key>\\n    <string>1</string>\\n"
+                   "</dict>\\n</plist>\\n", name, name, name);
+        fclose(f);
+        if (rename(tmp, path)) unlink(tmp);
+    }
+    free(tmp);
+}
+
+static char *azur_create_bundle_link(const char *wineloader_path, const char *exe_name)
+{
+    char *tempdir = create_tempdir(wineloader_path), *dir = NULL, *linkpath = NULL, *str = NULL, *p;
+    char name[96];
+    struct stat st;
+    size_t i, n = 0;
+
+    if (!tempdir) return NULL;
+    for (i = 0; exe_name[i] && n < sizeof(name) - 1; i++)
+    {
+        char c = exe_name[i];
+        name[n++] = ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.' || c == '-') ? c : '-';
+    }
+    name[n] = 0;
+    if (!n || asprintf(&dir, "%s%s.app/Contents/MacOS", tempdir, name) < 0 ||
+        asprintf(&linkpath, "%s/%s", dir, name) < 0)
+        goto fail;
+    /* If the link already exists, use it (if it's in this dir, it points to the right place). */
+    if (!stat(linkpath, &st)) goto done;
+
+    if ((p = strstr(dir, "/Contents/MacOS")))
+    {
+        *p = 0; mkdir(dir, 0700);
+        *p = '/'; p[sizeof("/Contents") - 1] = 0; mkdir(dir, 0700);
+        if (asprintf(&str, "%s/Info.plist", dir) >= 0) azur_write_bundle_plist(str, name);
+        free(str); str = NULL;
+        p[sizeof("/Contents") - 1] = '/'; mkdir(dir, 0700);
+    }
+    /* the loader looks for ntdll.so next to itself */
+    if (asprintf(&str, "%s", wineloader_path) >= 0 && (p = strrchr(str, '/')))
+    {
+        char *ntdll = NULL, *dst = NULL;
+        *p = 0;
+        if (asprintf(&ntdll, "%s/ntdll.so", str) >= 0 && asprintf(&dst, "%s/ntdll.so", dir) >= 0)
+            symlink(ntdll, dst);
+        free(ntdll); free(dst);
+    }
+    if (link(wineloader_path, linkpath) && symlink(wineloader_path, linkpath)) goto fail;
+
+done:
+    free(str); free(dir); free(tempdir);
+    return linkpath;
+fail:
+    free(str); free(dir); free(tempdir); free(linkpath);
+    return NULL;
+}
+
+static char *create_preloader_link(const char *wineloader_path, const char *exe_name)
+{
+    struct stat st;
+    char *linkpath;
+
+    if (!getenv("AZUR_NO_APP_BUNDLE") && (linkpath = azur_create_bundle_link(wineloader_path, exe_name)))
+        return linkpath;
+
+    if (!(linkpath = create_tempdir(wineloader_path)))
+        return NULL;
+
+    if (strlcat(linkpath, exe_name, MAX_PATH) >= MAX_PATH)
+        goto fail;
+
+    /* If the link already exists, use it (if it's in this dir, it points to the right place). */
+    if (!stat(linkpath, &st))
+        return linkpath;
+""")
+
+patch("dlls/ntdll/unix/loader.c", "app-bundle always",
+      """    if (getenv("WINEDLLPATH"))
+        replace_wineloader_path_with_link( &(argv[1]), image_path );""",
+      """    if (getenv("WINEDLLPATH") || !getenv("AZUR_NO_APP_BUNDLE"))  /* azur app-bundle: ntdll.so is linked next to it */
+        replace_wineloader_path_with_link( &(argv[1]), image_path );""")
 
 print("all patches applied")
