@@ -408,6 +408,8 @@ apply_settings() { # 넥슨 플러그를 켜기 직전에 적용해요 (게임�
   reg_sync "${vals[@]}" >/dev/null
 }
 
+cmd_apply_settings() { need_prefix; apply_settings; echo "설정을 적용했어요."; }  # 넥슨 플러그 없이 설정만 넣어요
+
 # 예전 이름을 쓰는 곳이 있어서 남겨 둬요.
 disable_nexon_launcher_service() {
   reg_sync "?HKLM|System\CurrentControlSet\Services\Nexon Launcher|Start|dword|4" >/dev/null
@@ -671,7 +673,7 @@ cmd_setup() { # [--runtime-from TAR.XZ] [--webview2-from DIR] [--import-crossove
 
 sub="${1:-status}"; shift || true
 case "$sub" in
-  setup|install-runtime|init-prefix|install-webview2|install-plug|install-ngm|configure|link-game|import-crossover|plug|game-direct|stop|status|status-code|detect-sources|winecfg|shell|settings|get|set|running|install-fonts|install-mono|download-status|report|uninstall)
+  setup|install-runtime|init-prefix|install-webview2|install-plug|install-ngm|configure|link-game|import-crossover|plug|game-direct|stop|status|status-code|detect-sources|winecfg|shell|settings|get|set|running|install-fonts|install-mono|download-status|report|uninstall|apply-settings)
     "cmd_${sub//-/_}" "$@" ;;
   *) sed -n '2,12p' "$0"; exit 1 ;;
 esac
