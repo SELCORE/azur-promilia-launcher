@@ -18,6 +18,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 CX_VER="${CX_VER:-26.3.0}"
 DXMT_VER="${DXMT_VER:-v0.80}"
+PATCH_REV="${PATCH_REV:-p1}"   # bump when runtime/patches changes
 WORK="${WORK:-$PWD/runtime-work}"
 JOBS="${JOBS:-$(sysctl -n hw.ncpu)}"
 SRC_URL="https://media.codeweavers.com/pub/crossover/source/crossover-sources-${CX_VER}.tar.gz"
@@ -88,6 +89,8 @@ cmd_fetch() {
   tar -xzf "$tgz" -C "$WORK" sources/wine
   mv "$WORK/sources/wine" "$SRC"; rm -rf "$WORK/sources"
   echo "Wine source: $(cat "$SRC/VERSION" 2>/dev/null || echo unknown)"
+  say "Applying runtime/patches"
+  python3 -I "$HERE/patches/apply.py" "$SRC"
 }
 
 configure_env() {
@@ -180,12 +183,13 @@ cmd_bundle() {
 
 cmd_package() {
   [ -x "$DIST/bin/wine" ] || die "run build first"
-  local name="azur-runtime-cx${CX_VER}-dxmt${DXMT_VER#v}" out="$WORK/out"
+  local name="azur-runtime-cx${CX_VER}-dxmt${DXMT_VER#v}-${PATCH_REV}" out="$WORK/out"
   mkdir -p "$out"
   cat > "$DIST/SOURCES.txt" <<EOF
 This runtime was built by runtime/build-runtime.sh in https://github.com/SELCORE/azur-promilia-launcher
 
-Wine:  CodeWeavers CrossOver ${CX_VER} source (LGPL-2.1-or-later), unmodified
+Wine:  CodeWeavers CrossOver ${CX_VER} source (LGPL-2.1-or-later), with the small keyboard
+       patches in runtime/patches/apply.py (revision ${PATCH_REV})
        ${SRC_URL}
 DXMT:  ${DXMT_VER} by Feifan He for CodeWeavers (LGPL-2.1-or-later)
        https://github.com/3Shain/dxmt/tree/${DXMT_VER}
