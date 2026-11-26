@@ -92,8 +92,23 @@ open "dist/Azur Promilia Launcher.app"
 | `./azurctl.sh status` | 설치 상태를 보여줘요 |
 | `./azurctl.sh import-crossover [보틀]` | CrossOver 보틀에 받아 둔 게임을 APFS 복제로 가져와요 |
 | `./azurctl.sh game-direct` | 넥슨 플러그 없이 게임 실행 파일만 켜 봐요 (그래픽·보안 모듈 확인용) |
+| `./azurctl.sh download-status` | 게임 다운로드 상태 (받는 중, 멈춤, 끝남) |
+| `./azurctl.sh report` | 문제 보고 내용을 출력해요 (토큰, 이메일, 사용자 이름은 가려요) |
+| `./azurctl.sh uninstall --keep-game` / `--all` | 런처를 지워요. `--keep-game`은 받은 게임을 남겨서 다시 준비할 때 그대로 써요 |
+
+## 문제가 생기면
+
+1. 런처 창의 **문제 보고**를 눌러요. 상태와 로그 끝부분이 클립보드에 복사되고, GitHub 이슈 양식이 열려요.
+   - 로그인 토큰, 이메일, 맥 사용자 이름, 넥슨 회원 번호는 자동으로 가려져요. 올리기 전에 한 번 훑어봐 주세요.
+2. 양식의 "런처 보고 내용" 칸에 붙여 넣고(⌘V) 증상을 적어 [이슈](https://github.com/SELCORE/azur-promilia-launcher/issues)로 올려 주세요.
+
+런처를 켜면 새 버전이 있는지 확인해서, 있으면 창 위쪽에 알려줘요.
 
 ## 알려진 문제
+
+- **게임 다운로드가 중간에 멈춤**
+  - Wine에서 넥슨 다운로더가 가끔 중간에 멈추고 NGM이 꺼져요. 받은 부분은 남아 있어요.
+  - 런처 창이 이걸 알아채서 알려줘요. 넥슨 플러그에서 **설치(이어받기)** 를 다시 누르면 이어서 받아요.
 
 - **게임 안 글자가 깨지던 문제 (해결)**
   - 게임 일부 화면이 윈도우 글꼴(MiSans, Noto Sans S Chinese, 맑은 고딕)을 찾는데 Wine에는 없어서 한글이 빠져 보였어요.
@@ -125,8 +140,10 @@ runtime/build-runtime.sh all    # 결과: runtime-work/out/azur-runtime-*.tar.xz
 
 ## 제거
 
-1. `./azurctl.sh stop`을 실행해요.
-2. `~/Library/Application Support/Azur Promilia Launcher` 폴더와 앱을 지워요.
+1. 런처 창의 **지우기…** 를 눌러요.
+   - **게임은 남기고 지우기:** Wine, 넥슨 플러그, 설정, 기록만 지워요. 다시 준비하면 남겨 둔 게임을 그대로 써요.
+   - **게임까지 모두 지우기:** 게임(약 82GB)까지 지워요. 되돌릴 수 없어요.
+2. 앱은 응용 프로그램 폴더에서 휴지통으로 옮겨요.
 
 ## 출처와 라이선스
 

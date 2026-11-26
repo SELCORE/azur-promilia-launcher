@@ -269,18 +269,14 @@ migrate_game_link() { # 0.3.1까지 만든 링크를 따로 된 사본으로 바
   fi
 }
 
-cmd_import_crossover() { # [보틀 이름]  CrossOver 보틀에 받아 둔 게임을 다시 받지 않고 가져와요 (APFS 복제)
-  need_prefix
-  local bottle="${1:-Azur Promilia}"
-  local b="$HOME/Library/Application Support/CrossOver/Bottles/$bottle"
-  [ -f "$b/drive_c/Nexon/AzurPromilia/AzurPromilia.exe" ] || die "보틀 '$bottle'에 설치된 게임이 없어요."
-  running_in_prefix 'NexonPlug|NGM64|NGM' && die "넥슨 플러그가 실행 중이에요. ./azurctl.sh stop 후 다시 해 주세요."
-  cmd_link_game "$b/drive_c/Nexon/AzurPromilia"
-  # NGM이 게임 설치 위치를 기억하는 키 이름(예: 2887_<태그>_live_<번호>의 base64)을 보틀에서 그대로 가져와요.
-  local key
-  key="$( { grep -F -B3 '"RootPath"="C:\\Nexon\\AzurPromilia"' "$b/system.reg" || true; } \
-        | sed -nE 's/^\[Software\\\\Wow6432Node\\\\Nexon\\\\([A-Za-z0-9+=]+)\].*/\1/p' | tail -1)"
-  [ -n "$key" ] || die "보틀에서 게임 설치 정보를 찾지 못했어요."
+game_install_key() { # <system.reg>  NGM이 게임 설치 위치를 기억하는 키 이름 (2887_<태그>_live_<번호>의 base64)
+  { grep -F -B3 '"RootPath"="C:\\Nexon\\AzurPromilia"' "$1" 2>/dev/null || true; } \
+    | sed -nE 's/^\[Software\\\\Wow6432Node\\\\Nexon\\\\([A-Za-z0-9+=]+)\].*/\1/p' | tail -1
+}
+
+register_game_install() { # <키 이름> [2887.dat]  NGM이 "설치됨"으로 알도록 기록해요.
+  # 이 기록이 없으면 넥슨 플러그에서 설치를 누를 때 NGM이 게임 폴더를 비우고 처음부터 받아요.
+  local key="$1" dat="${2:-}"
   reg_add "HKLM\\Software\\Wow6432Node\\Nexon\\$key" /v RootPath /t REG_SZ /d 'C:\Nexon\AzurPromilia'
   local u="HKLM\\Software\\Wow6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\$key"
   reg_add "$u" /v DisplayName /t REG_SZ /d '아주르 프로밀리아'
@@ -290,7 +286,20 @@ cmd_import_crossover() { # [보틀 이름]  CrossOver 보틀에 받아 둔 게�
   reg_add "$u" /v UninstallString /t REG_SZ /d '"C:\Nexon\AzurPromilia\NGM64.exe" -mode:uninstall -game:2887 -service:0 -use_local_dll'
   reg_add 'HKLM\Software\Wow6432Node\Nexon\NGM' /v NxDownload /t REG_SZ /d 'C:\Nexon\Download'
   mkdir -p "$DRIVE_C/ProgramData/Nexon/NGM" "$DRIVE_C/Nexon/Download"
-  [ -f "$b/drive_c/ProgramData/Nexon/NGM/2887.dat" ] && cp "$b/drive_c/ProgramData/Nexon/NGM/2887.dat" "$DRIVE_C/ProgramData/Nexon/NGM/2887.dat"
+  [ -n "$dat" ] && [ -f "$dat" ] && cp "$dat" "$DRIVE_C/ProgramData/Nexon/NGM/2887.dat"
+  return 0
+}
+
+cmd_import_crossover() { # [보틀 이름]  CrossOver 보틀에 받아 둔 게임을 다시 받지 않고 가져와요 (APFS 복제)
+  need_prefix
+  local bottle="${1:-Azur Promilia}"
+  local b="$HOME/Library/Application Support/CrossOver/Bottles/$bottle"
+  [ -f "$b/drive_c/Nexon/AzurPromilia/AzurPromilia.exe" ] || die "보틀 '$bottle'에 설치된 게임이 없어요."
+  running_in_prefix 'NexonPlug|NGM64|NGM' && die "넥슨 플러그가 실행 중이에요. ./azurctl.sh stop 후 다시 해 주세요."
+  local key; key="$(game_install_key "$b/system.reg")"
+  [ -n "$key" ] || die "보틀에서 게임 설치 정보를 찾지 못했어요."
+  cmd_link_game "$b/drive_c/Nexon/AzurPromilia"
+  register_game_install "$key" "$b/drive_c/ProgramData/Nexon/NGM/2887.dat"
   echo "CrossOver 보틀 '$bottle'의 게임을 가져왔어요 (설치 정보 키: $key)."
 }
 
@@ -380,6 +389,118 @@ cmd_stop()    { [ -d "$PREFIX" ] && wserver -k 2>/dev/null || true; echo "종료
 cmd_winecfg() { need_prefix; w winecfg; }
 cmd_shell()   { need_prefix; echo "WINEPREFIX=$PREFIX  wine=$WINE_DIR/bin/wine"; }
 
+# ---- 다운로드 상태 ----
+# 게임 다운로드는 NGM이 해요. Wine에서는 가끔 중간에 멈추고 NGM이 꺼져서, 넥슨 플러그에서
+# 이어받기를 다시 눌러야 해요. 런처 창이 이걸 알아채서 안내할 수 있게 상태를 한 줄로 알려줘요.
+#   state=none|downloading|stalled|stopped|installed  game_gb=..  pieces=..
+cmd_download_status() {
+  local game="$DRIVE_C/Nexon/AzurPromilia" pend="$DRIVE_C/Nexon/Download/2887/install"
+  local gb pieces state ngm=no stamp="$APP_HOME/.download-progress"
+  pgrep -f 'NGM64\.exe' >/dev/null && ngm=yes
+  gb="$(du -sk "$game" 2>/dev/null | awk '{printf "%.1f", $1/1048576}')"; gb="${gb:-0.0}"
+  pieces="$(ls "$pend" 2>/dev/null | tr '\n' ' ' | sed 's/ $//')"
+  if [ "$ngm" = yes ]; then
+    # 2분 넘게 크기가 그대로면 멈춘 것으로 봐요
+    local now size last_size last_time
+    now=$(date +%s); size="$(du -sk "$DRIVE_C/Nexon" 2>/dev/null | awk '{print $1}')"
+    [ -f "$stamp" ] && read -r last_size last_time < "$stamp"
+    if [ "${last_size:-}" != "$size" ]; then echo "$size $now" > "$stamp"; state=downloading
+    elif [ $((now - ${last_time:-$now})) -gt 120 ]; then state=stalled
+    else state=downloading; fi
+  elif [ -n "$pieces" ]; then
+    state=stopped
+  elif [ -f "$game/AzurPromilia.exe" ]; then
+    state=installed
+  else
+    state=none
+  fi
+  echo "state=$state game_gb=$gb pieces=${pieces:-none}"
+}
+
+# ---- 문제 보고 ----
+# 상태와 로그 끝부분을 모아요. 로그인 토큰, 이메일, 맥 사용자 이름, 넥슨 회원 번호는 가려요.
+redact() {
+  sed -E -e 's/(NP[0-9]+:auth:|passport:)[^ "\x27}]*/\1[가림]/g' \
+         -e 's/-token:[^ ]*/-token:[가림]/g' \
+         -e 's/("[A-Za-z_]*([Tt]oken|[Tt]icket|[Ss]ession[Ii]d|[Pp]assport)"[[:space:]]*:[[:space:]]*")[^"]*/\1[가림]/g' \
+         -e 's/(ias:gt:|NP[0-9]+:)[^ "}]*/\1[가림]/g' \
+         -e 's/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/[이메일 가림]/g' \
+         -e "s#$HOME#~#g" -e "s#/Users/$USER#~#g" \
+         -e 's/(user_sn|UID|uid)([":= ]+)[0-9]{5,}/\1\2[가림]/g'
+}
+cmd_report() {
+  {
+    echo "### 아주르 프로밀리아 런처 문제 보고"
+    echo "- 런처 버전: ${AZUR_APP_VERSION:-알 수 없음}"
+    echo "- macOS: $(sw_vers -productVersion) ($(sw_vers -buildVersion))"
+    echo "- 맥: $(sysctl -n hw.model) / $(sysctl -n machdep.cpu.brand_string) / 메모리 $(( $(sysctl -n hw.memsize) / 1073741824 ))GB"
+    echo "- 여유 공간: $(df -h "$HOME" | awk 'NR==2{print $4}')"
+    echo "- 런타임: $(cat "$WINE_DIR/.azur-runtime" 2>/dev/null || echo 없음)"
+    echo "- Wine Mono: $(cat "$DRIVE_C/windows/.azur-mono" 2>/dev/null || echo 없음)  WebView2: $(webview2_version 2>/dev/null || echo 없음)"
+    echo "- 실행 중: $(cmd_running)  다운로드: $(cmd_download_status 2>/dev/null)"
+    echo "- 설정: $(cmd_settings 2>/dev/null | tr '\n' ' ')"
+    echo
+    echo '```'
+    cmd_status 2>&1
+    echo '```'
+    local f
+    for f in "$LOG_DIR/setup.log" "$LOG_DIR/nexonplug.log" "$DRIVE_C/ProgramData/Nexon/NGM/NGM.log" \
+             "$DRIVE_C/users/crossover/AppData/Roaming/Nexon/nxDownloader/config/service.log"; do
+      [ -f "$f" ] || continue
+      echo; echo "#### $(basename "$f") (마지막 30줄)"; echo '```'
+      tail -30 "$f" | tr -d '\r' | grep -v 'VK_\|^\s*$' | cut -c1-240
+      echo '```'
+    done
+    local pl; pl="$(find "$DRIVE_C/users" -path '*manjuu/AzurPromilia/Player.log' 2>/dev/null | head -1)"
+    if [ -n "$pl" ]; then
+      echo; echo "#### 게임 로그 오류 (마지막 25개)"; echo '```'
+      grep -E 'Exception|\[Error\]|error|Crash' "$pl" | tail -25 | cut -c1-240
+      echo '```'
+    fi
+  } | redact
+}
+
+# ---- 지우기 ----
+#   uninstall --keep-game  런처 데이터는 지우고 받은 게임은 남겨요 (다시 준비할 때 그대로 써요)
+#   uninstall --all        게임까지 모두 지워요
+KEEP_DIR="$APP_HOME/kept-game"
+cmd_uninstall() {
+  local mode="${1:-}"
+  [ "$mode" = --keep-game ] || [ "$mode" = --all ] || die "사용법: uninstall --keep-game | --all"
+  [ -d "$PREFIX" ] && wserver -k 2>/dev/null || true
+  sleep 1
+  if [ "$mode" = --keep-game ] && [ -f "$DRIVE_C/Nexon/AzurPromilia/AzurPromilia.exe" ]; then
+    mkdir -p "$KEEP_DIR"; rm -rf "$KEEP_DIR/AzurPromilia"
+    game_install_key "$PREFIX/system.reg" > "$KEEP_DIR/install-key.txt"
+    cp "$DRIVE_C/ProgramData/Nexon/NGM/2887.dat" "$KEEP_DIR/2887.dat" 2>/dev/null || true
+    mv "$DRIVE_C/Nexon/AzurPromilia" "$KEEP_DIR/AzurPromilia"
+  fi
+  local item
+  for item in "$APP_HOME"/* "$APP_HOME"/.[!.]*; do
+    [ -e "$item" ] || continue
+    [ "$mode" = --keep-game ] && [ "$item" = "$KEEP_DIR" ] && continue
+    rm -rf "$item"
+  done
+  [ "$mode" = --all ] && rm -rf "$APP_HOME"
+  echo "지웠어요.$([ "$mode" = --keep-game ] && [ -d "$KEEP_DIR/AzurPromilia" ] && echo " 게임은 남겨 뒀어요. 다시 준비하면 그대로 써요.")"
+}
+
+restore_kept_game() {
+  [ -f "$KEEP_DIR/AzurPromilia/AzurPromilia.exe" ] || return 0
+  [ -e "$DRIVE_C/Nexon/AzurPromilia" ] && [ -n "$(ls -A "$DRIVE_C/Nexon/AzurPromilia" 2>/dev/null)" ] && return 0
+  local key; key="$(cat "$KEEP_DIR/install-key.txt" 2>/dev/null)"
+  if [ -z "$key" ]; then
+    warn "남겨 둔 게임의 설치 기록이 없어서 그대로 둬요: $KEEP_DIR (넥슨 플러그에서 새로 설치하면 폴더를 비우고 받아요)"
+    return 0
+  fi
+  register_game_install "$key" "$KEEP_DIR/2887.dat"   # 기록 먼저 (실패하면 게임은 그대로 남아요)
+  rmdir "$DRIVE_C/Nexon/AzurPromilia" 2>/dev/null || true
+  mkdir -p "$DRIVE_C/Nexon"
+  mv "$KEEP_DIR/AzurPromilia" "$DRIVE_C/Nexon/AzurPromilia"
+  rm -rf "$KEEP_DIR"
+  echo "남겨 둔 게임을 다시 연결했어요. 넥슨 플러그에서 바로 게임시작을 누르면 돼요."
+}
+
 cmd_status() {
   printf '%-14s %s\n' "앱 폴더" "$APP_HOME"
   printf '%-14s %s\n' "Wine" "$([ -x "$WINE_DIR/bin/wine" ] && w --version 2>/dev/null || echo 없음)"
@@ -437,6 +558,7 @@ cmd_setup() { # [--runtime-from TAR.XZ] [--webview2-from DIR] [--import-crossove
   say "4/6 넥슨 플러그 설치"; cmd_install_plug
   say "5/6 NGM 설치"; cmd_install_ngm
   say "6/6 호환 설정"; cmd_configure; cmd_install_fonts
+  restore_kept_game
   if [ -n "$import_bottle" ] && [ ! -e "$DRIVE_C/Nexon/AzurPromilia" ]; then
     say "CrossOver에 받아 둔 게임 가져오기"; cmd_import_crossover "$import_bottle"
   fi
@@ -446,7 +568,7 @@ cmd_setup() { # [--runtime-from TAR.XZ] [--webview2-from DIR] [--import-crossove
 
 sub="${1:-status}"; shift || true
 case "$sub" in
-  setup|install-runtime|init-prefix|install-webview2|install-plug|install-ngm|configure|link-game|import-crossover|plug|game-direct|stop|status|status-code|detect-sources|winecfg|shell|settings|get|set|running|install-fonts|install-mono)
+  setup|install-runtime|init-prefix|install-webview2|install-plug|install-ngm|configure|link-game|import-crossover|plug|game-direct|stop|status|status-code|detect-sources|winecfg|shell|settings|get|set|running|install-fonts|install-mono|download-status|report|uninstall)
     "cmd_${sub//-/_}" "$@" ;;
   *) sed -n '2,12p' "$0"; exit 1 ;;
 esac

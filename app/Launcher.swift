@@ -37,6 +37,18 @@ final class LauncherModel: ObservableObject {
     @Published var customFps = false
     @Published var fps = "60"
 
+    // 다운로드 상태 (none|downloading|stalled|stopped|installed)
+    @Published var downloadState = "none"
+    @Published var gameGB = "0.0"
+    // 새 버전
+    @Published var newVersion: String?
+    @Published var newVersionURL: URL?
+    // 알림 창
+    @Published var notice: String?
+
+    let repo = "SELCORE/azur-promilia-launcher"
+    let appVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
+
     private var loading = false
     private var timer: Timer?
 
@@ -48,8 +60,12 @@ final class LauncherModel: ObservableObject {
 
     init() {
         Task { await refresh() }
+        Task { await checkForUpdate() }
         timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
-            Task { @MainActor in await self?.refreshRunning() }
+            Task { @MainActor in
+                await self?.refreshRunning()
+                await self?.refreshDownload()
+            }
         }
     }
 
@@ -97,6 +113,75 @@ final class LauncherModel: ObservableObject {
     func refreshRunning() async {
         let (_, r) = await ctlRun("running")
         running = r.trimmingCharacters(in: .whitespacesAndNewlines) == "yes"
+    }
+
+    func refreshDownload() async {
+        guard state == .ready else { return }
+        let (_, out) = await ctlRun("download-status")
+        for part in out.split(whereSeparator: { $0 == " " || $0.isNewline }) {
+            let kv = part.split(separator: "=", maxSplits: 1).map(String.init)
+            guard kv.count == 2 else { continue }
+            if kv[0] == "state" { downloadState = kv[1] }
+            if kv[0] == "game_gb" { gameGB = kv[1] }
+        }
+    }
+
+    /// GitHub 릴리스에서 이 앱보다 새 버전(v로 시작하는 태그)이 있는지 봐요.
+    func checkForUpdate() async {
+        guard let url = URL(string: "https://api.github.com/repos/\(repo)/releases?per_page=15") else { return }
+        var req = URLRequest(url: url)
+        req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        req.timeoutInterval = 10
+        guard let (data, _) = try? await URLSession.shared.data(for: req),
+              let list = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return }
+        for rel in list {
+            guard let tag = rel["tag_name"] as? String, tag.hasPrefix("v"),
+                  (rel["draft"] as? Bool) != true else { continue }
+            let v = String(tag.dropFirst())
+            if isNewer(v, than: appVersion) {
+                newVersion = v
+                newVersionURL = URL(string: rel["html_url"] as? String ?? "")
+            }
+            return   // 가장 최근 앱 릴리스만 비교해요
+        }
+    }
+
+    func isNewer(_ a: String, than b: String) -> Bool {
+        let pa = a.split(separator: ".").map { Int($0) ?? 0 }, pb = b.split(separator: ".").map { Int($0) ?? 0 }
+        for i in 0..<max(pa.count, pb.count) {
+            let x = i < pa.count ? pa[i] : 0, y = i < pb.count ? pb[i] : 0
+            if x != y { return x > y }
+        }
+        return false
+    }
+
+    /// 문제 보고: 상태와 로그(개인정보 가림)를 모아 클립보드에 복사하고 GitHub 이슈 양식을 열어요.
+    func report() {
+        Task {
+            let (_, out) = await shell(["-c", "AZUR_APP_VERSION=\"$1\" \"$0\" report", ctl, appVersion])
+            let file = appHome.appendingPathComponent("logs/report.md")
+            try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try? out.write(to: file, atomically: true, encoding: .utf8)
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(out, forType: .string)
+            if let url = URL(string: "https://github.com/\(repo)/issues/new?template=bug_report.yml") {
+                NSWorkspace.shared.open(url)
+            }
+            notice = "문제 보고 내용을 클립보드에 복사했어요. 열린 GitHub 이슈 양식의 \"런처 보고 내용\" 칸에 붙여 넣어 주세요.\n로그인 토큰, 이메일, 맥 사용자 이름은 가려져 있어요. 같은 내용이 logs/report.md에도 저장돼요."
+        }
+    }
+
+    /// 지우기: keepGame이면 받은 게임은 남겨요.
+    func uninstall(keepGame: Bool) {
+        busy = true
+        Task {
+            let (status, out) = await ctlRun("uninstall", keepGame ? "--keep-game" : "--all")
+            busy = false
+            notice = status == 0
+                ? out.trimmingCharacters(in: .whitespacesAndNewlines) + "\n앱 자체는 응용 프로그램 폴더에서 휴지통으로 옮기면 지워져요."
+                : out.trimmingCharacters(in: .whitespacesAndNewlines)
+            await refresh()
+        }
     }
 
     func loadSettings() async {
@@ -184,10 +269,16 @@ final class LauncherModel: ObservableObject {
 
 struct ContentView: View {
     @EnvironmentObject var m: LauncherModel
+    @State private var confirmUninstall = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             header
+            if let v = m.newVersion {
+                banner(color: .blue, icon: "arrow.down.circle.fill",
+                       text: "새 버전 v\(v)이 나왔어요. 지금은 v\(m.appVersion)이에요.",
+                       button: "받으러 가기") { if let u = m.newVersionURL { NSWorkspace.shared.open(u) } }
+            }
             switch m.state {
             case .checking:
                 ProgressView("확인하는 중…")
@@ -195,6 +286,7 @@ struct ContentView: View {
                 setupSection
             case .ready:
                 launchSection
+                downloadSection
             }
             if let e = m.errorText {
                 Text(e).font(.callout).foregroundStyle(.red).textSelection(.enabled)
@@ -202,14 +294,57 @@ struct ContentView: View {
             Divider()
             SettingsSection()
             Divider()
-            HStack {
+            HStack(spacing: 10) {
+                Button("문제 보고") { m.report() }
                 Button("기록 폴더 열기") { m.openLogs() }
+                Button("지우기…") { confirmUninstall = true }
+                    .disabled(m.busy || m.state == .checking)
                 Spacer()
-                Text("비공식 런처 · 계정 제재 위험은 본인 책임이에요")
-                    .font(.caption).foregroundStyle(.secondary)
             }
+            Text("비공식 런처 · 계정 제재 위험은 본인 책임이에요 · v\(m.appVersion)")
+                .font(.caption).foregroundStyle(.secondary)
         }
         .padding(20)
+        .confirmationDialog("런처를 지울까요?", isPresented: $confirmUninstall) {
+            Button("게임은 남기고 지우기") { m.uninstall(keepGame: true) }
+            Button("게임까지 모두 지우기", role: .destructive) { m.uninstall(keepGame: false) }
+            Button("취소", role: .cancel) {}
+        } message: {
+            Text("Wine, 넥슨 플러그, 설정, 기록을 지워요. 게임을 남기면 다시 준비할 때 받지 않고 그대로 써요. 게임까지 지우면 되돌릴 수 없어요 (약 82GB).")
+        }
+        .alert("알림", isPresented: Binding(get: { m.notice != nil }, set: { if !$0 { m.notice = nil } })) {
+            Button("확인") { m.notice = nil }
+        } message: {
+            Text(m.notice ?? "")
+        }
+    }
+
+    func banner(color: Color, icon: String, text: String, button: String? = nil, action: (() -> Void)? = nil) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: icon).foregroundStyle(color)
+            Text(text).font(.callout).fixedSize(horizontal: false, vertical: true)
+            Spacer()
+            if let button, let action { Button(button, action: action) }
+        }
+        .padding(10)
+        .background(color.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    @ViewBuilder var downloadSection: some View {
+        switch m.downloadState {
+        case "downloading":
+            banner(color: .green, icon: "arrow.down.circle",
+                   text: "게임을 받는 중이에요 · 지금 \(m.gameGB)GB (전체 약 82GB). 넥슨 플러그는 닫지 말고 최소화만 해 주세요.")
+        case "stalled":
+            banner(color: .orange, icon: "exclamationmark.triangle.fill",
+                   text: "다운로드가 2분 넘게 진행되지 않아요 (\(m.gameGB)GB). 조금 더 기다려도 그대로면 넥슨 플러그에서 설치(이어받기)를 다시 눌러 주세요.")
+        case "stopped":
+            banner(color: .orange, icon: "pause.circle.fill",
+                   text: "게임 다운로드가 중간에 멈췄어요 (\(m.gameGB)GB). 받은 부분은 남아 있어요. 넥슨 플러그에서 설치(이어받기)를 다시 눌러 주세요.",
+                   button: m.running ? nil : "넥슨 플러그 열기") { m.launchPlug() }
+        default:
+            EmptyView()
+        }
     }
 
     var header: some View {
