@@ -5,7 +5,7 @@
 # 필요한 것: Xcode 명령줄 도구 (xcode-select --install)
 set -euo pipefail
 
-VERSION="0.4.3"
+VERSION="0.4.4"
 DIR="$(cd "$(dirname "$0")" && pwd)"
 OUT="${1:-$DIR/dist/Azur Promilia Launcher.app}"
 EXE="AzurPromiliaLauncher"

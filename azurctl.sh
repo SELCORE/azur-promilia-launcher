@@ -368,7 +368,10 @@ sections = {}
 for w in wants:
     only_if_exists = w.startswith("?")
     hive, key, name, typ, value = w.lstrip("?").split("|", 4)
-    have = hives[hive].get(key.lower())
+    lk = key.lower()
+    if lk.startswith("system\\currentcontrolset\\"):   # Wine이 system.reg에는 ControlSet001로 적어 둬요
+        lk = "system\\controlset001\\" + lk[len("system\\currentcontrolset\\"):]
+    have = hives[hive].get(lk)
     if only_if_exists and have is None:
         continue
     data = "dword:%08x" % int(value) if typ == "dword" else '"%s"' % esc(value)
@@ -427,6 +430,32 @@ apply_settings() { # 넥슨 플러그를 켜기 직전에 적용해요 (게임�
 
 cmd_apply_settings() { need_prefix; apply_settings; echo "설정을 적용했어요."; }  # 넥슨 플러그 없이 설정만 넣어요
 
+# NGM은 실행될 때마다 "Nexon Launcher" 서비스를 자동 시작으로 다시 등록할 수 있어요. Wine에서는 이 서비스가
+# 끝내 시작되지 않아서, Wine을 처음 켤 때마다 40초쯤 기다리다 넘어가요. Wine이 꺼져 있을 때는 Wine을 켜기 전에
+# 레지스트리 파일에서 바로 꺼 둬요 (Wine은 켜질 때 이 파일을 읽어요).
+disable_nexon_launcher_service_offline() {
+  python3 -I - "$PREFIX/system.reg" <<'PY' || true
+import re, sys
+path = sys.argv[1]
+try:
+    text = open(path, encoding="utf-8", errors="surrogateescape").read()
+except OSError:
+    sys.exit(0)
+head = re.compile(r'^\[System\\\\(?:ControlSet001|CurrentControlSet)\\\\Services\\\\Nexon Launcher\][^\n]*\n', re.I | re.M)
+m = head.search(text)
+if not m:
+    sys.exit(0)
+end = text.find("\n[", m.end())
+end = len(text) if end < 0 else end
+block = text[m.end():end]
+new = re.sub(r'^"Start"=dword:[0-9a-fA-F]{8}$', '"Start"=dword:00000004', block, flags=re.M)
+if new != block:
+    tmp = path + ".azur-tmp"
+    open(tmp, "w", encoding="utf-8", errors="surrogateescape").write(text[:m.end()] + new + text[end:])
+    import os; os.replace(tmp, path)
+PY
+}
+
 # 예전 이름을 쓰는 곳이 있어서 남겨 둬요.
 disable_nexon_launcher_service() {
   reg_sync "?HKLM|System\CurrentControlSet\Services\Nexon Launcher|Start|dword|4" >/dev/null
@@ -440,6 +469,7 @@ cmd_plug() {
 
 plug_prepare() { # 넥슨 플러그를 켜기 전에 글꼴, Mono, 설정을 맞춰요
   need_prefix
+  [ "$(cmd_running)" = no ] && disable_nexon_launcher_service_offline
   [ -f "$DRIVE_C/Nexon/NexonPlug/NexonPlug.exe" ] || die "넥슨 플러그가 없어요. 먼저 ./azurctl.sh setup"
   mkdir -p "$LOG_DIR"
   fonts_current || cmd_install_fonts >/dev/null
