@@ -6,12 +6,15 @@
 #   ./azurctl.sh stop             이 런처의 Wine 프로세스를 모두 종료해요
 #   ./azurctl.sh status           설치 상태를 보여줘요
 #   ./azurctl.sh settings         설정 보기 / set <이름> <값> 으로 바꾸기
-#     metal_hud(0/1) retina(0/1) left_cmd_ctrl(0/1) minimize_plug(0/1) avx2(0/1) custom_resolution(0/1) width height custom_fps(0/1) fps
+#     metal_hud(0/1) retina(0/1) left_cmd_ctrl(0/1) minimize_plug(0/1) after_game(restore/quit/none) avx2(0/1)
+#     battery_fps(0/1) menu_bar(0/1) screenshot_key(0/1) auto_play(0/1) custom_resolution(0/1) width height custom_fps(0/1) fps
 #
 # 개별 단계: install-runtime, init-prefix, install-webview2, install-plug, install-ngm,
 #           configure, link-game, import-crossover, game-direct, winecfg, shell,
 #           open-url <ngm://... | nexonplug://...> (브라우저 로그인 결과를 넥슨 플러그에 넘겨요. 런처 앱이 불러요)
-#           minimize-plug (넥슨 플러그 창 최소화. 게임이 켜지면 런처가 알아서 해요)
+#           minimize-plug (넥슨 플러그 창 최소화. 게임이 켜지면 런처가 알아서 해요),
+#           play (넥슨 플러그를 켜고 로그인되면 바로 게임 실행), live (지금 상태 한 줄),
+#           verify-runtime / repair-runtime (런타임 파일 검사 / 고치기)
 # 내려받는 곳: 이 저장소의 GitHub 릴리스(직접 빌드한 Wine + DXMT 런타임), Microsoft(WebView2), 넥슨 공식 서버.
 set -euo pipefail
 
@@ -24,10 +27,10 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # Wine + DXMT 런타임: CodeWeavers가 공개한 CrossOver 소스로 이 저장소의 GitHub Actions에서 직접 빌드하고
 # DXMT 공식 릴리스를 넣은 것이에요 (runtime/build-runtime.sh). 이 저장소의 릴리스에서 받아요.
-RUNTIME_TAG="runtime-cx26.3.0-dxmt0.80-p6"
-RUNTIME_NAME="azur-runtime-cx26.3.0-dxmt0.80-p6"
+RUNTIME_TAG="runtime-cx26.3.0-dxmt0.80-p7"
+RUNTIME_NAME="azur-runtime-cx26.3.0-dxmt0.80-p7"
 RUNTIME_URL="https://github.com/SELCORE/azur-promilia-launcher/releases/download/$RUNTIME_TAG/$RUNTIME_NAME.tar.xz"
-RUNTIME_SHA256="71f6262552da28fbb88864557c7fd453082c75804ecc16c32a058848af7a2a3e"
+RUNTIME_SHA256="a04488988e619276a5396297fbd4beb80af52057567a898d0143d672d7461d6e"
 
 PLUG_URL="https://platform.nexon.com/NexonPlug/Install/InstallData/65538.z00"
 NGM_URL="https://platform.nexon.com/NGM/Bin"
@@ -75,9 +78,98 @@ cmd_install_runtime() { # [--from <런타임 tar.xz>]  Wine + DXMT 런타임 설
   [ -x "$tmp/x/wine/bin/wine" ] && [ -f "$tmp/x/wine/lib/wine/x86_64-unix/winemetal.so" ] \
     || { rm -rf "$tmp"; die "런타임 압축 안에 Wine이나 DXMT가 없어요."; }
   xattr -dr com.apple.quarantine "$tmp/x/wine" 2>/dev/null || true
-  rm -rf "$WINE_DIR"; mv "$tmp/x/wine" "$WINE_DIR"; rm -rf "$tmp"
+  runtime_manifest "$tmp/x/wine" > "$tmp/x/wine/.azur-manifest"   # 파일 검사용 기준 (verify-runtime)
+  rm -rf "$WINE_DIR"; mv "$tmp/x/wine" "$WINE_DIR"
+  # 받은 압축 파일은 남겨 둬서, 파일이 깨졌을 때 다시 받지 않고 고칠 수 있게 해요 (repair-runtime).
+  mkdir -p "$APP_HOME/cache"; rm -f "$APP_HOME"/cache/azur-runtime-*.tar.xz
+  mv "$tmp/runtime.tar.xz" "$APP_HOME/cache/$RUNTIME_NAME.tar.xz"; rm -rf "$tmp"
   echo "$RUNTIME_NAME" > "$WINE_DIR/.azur-runtime"   # 어떤 런타임인지 기록 (바뀌면 다시 받아요)
   echo "Wine: $(w --version 2>/dev/null) + DXMT"
+}
+
+runtime_manifest() { # <wine 폴더>  파일마다 sha256 (링크는 대상 경로)
+  python3 -I - "$1" <<'PY'
+import hashlib, os, sys
+root = sys.argv[1]
+for d, dirs, files in os.walk(root):
+    dirs.sort()
+    for f in sorted(files):
+        p = os.path.join(d, f); rel = os.path.relpath(p, root)
+        if rel.startswith(".azur-"): continue
+        if os.path.islink(p): print("link", os.readlink(p), rel, sep="\t"); continue
+        h = hashlib.sha256()
+        with open(p, "rb") as fh:
+            for b in iter(lambda: fh.read(1 << 20), b""): h.update(b)
+        print(h.hexdigest(), rel, sep="\t")
+PY
+}
+
+cmd_verify_runtime() { # 런타임 파일이 받았을 때와 같은지 확인해요. 마지막 줄: result=ok|bad <개수>|unknown
+  need_wine
+  [ -f "$WINE_DIR/.azur-manifest" ] || { echo "이 런타임에는 검사 기준이 없어요 (0.4.6 전에 받은 런타임). 고치기를 하면 만들어요."; echo "result=unknown"; return 0; }
+  local bad
+  bad="$(python3 -I - "$WINE_DIR" <<'PY'
+import hashlib, os, sys
+root = sys.argv[1]; bad = []
+for line in open(os.path.join(root, ".azur-manifest"), encoding="utf-8"):
+    want, rel = line.rstrip("\n").split("\t", 1)
+    if want == "link":
+        target, rel = rel.split("\t", 1); p = os.path.join(root, rel)
+        if not (os.path.islink(p) and os.readlink(p) == target): bad.append(rel)
+        continue
+    p = os.path.join(root, rel)
+    try:
+        h = hashlib.sha256()
+        with open(p, "rb") as fh:
+            for b in iter(lambda: fh.read(1 << 20), b""): h.update(b)
+        if h.hexdigest() != want: bad.append(rel)
+    except OSError:
+        bad.append(rel)
+for b in bad[:10]: print("  다름: " + b)
+print(len(bad))
+PY
+)"
+  local n; n="$(echo "$bad" | tail -1)"
+  echo "$bad" | sed '$d'
+  if [ "$n" = 0 ]; then echo "런타임 파일이 모두 받았을 때 그대로예요."; echo "result=ok"
+  else echo "런타임 파일 ${n}개가 받았을 때와 달라요. 고치기를 눌러 주세요."; echo "result=bad $n"; fi
+}
+
+cmd_repair_runtime() { # 받아 둔(없으면 새로 받은) 런타임 압축에서 다르거나 없는 파일만 다시 풀어요
+  [ "$(cmd_running)" = no ] || die "넥슨 플러그나 게임이 켜져 있어요. 종료한 뒤 고쳐 주세요."
+  local tgz="$APP_HOME/cache/$RUNTIME_NAME.tar.xz" tmp n
+  if [ ! -f "$tgz" ] || [ "$(sha_of "$tgz")" != "$RUNTIME_SHA256" ]; then
+    mkdir -p "$APP_HOME/cache"; rm -f "$APP_HOME"/cache/azur-runtime-*.tar.xz
+    echo "런타임을 받아요 (약 296MB)…"
+    fetch "$RUNTIME_URL" "$tgz.part"
+    [ "$(sha_of "$tgz.part")" = "$RUNTIME_SHA256" ] || { rm -f "$tgz.part"; die "런타임 파일 체크섬이 맞지 않아요."; }
+    mv "$tgz.part" "$tgz"
+  fi
+  tmp="$(mktemp -d)"; mkdir -p "$tmp/x"; tar -xJf "$tgz" -C "$tmp/x"
+  xattr -dr com.apple.quarantine "$tmp/x/wine" 2>/dev/null || true
+  runtime_manifest "$tmp/x/wine" > "$tmp/x/wine/.azur-manifest"
+  mkdir -p "$WINE_DIR"
+  n="$(python3 -I - "$tmp/x/wine" "$WINE_DIR" <<'PY'
+import filecmp, os, shutil, sys
+src, dst = sys.argv[1], sys.argv[2]; fixed = 0
+for d, dirs, files in os.walk(src):
+    rel_d = os.path.relpath(d, src)
+    os.makedirs(os.path.join(dst, rel_d), exist_ok=True)
+    for f in files:
+        s = os.path.join(d, f); t = os.path.join(dst, rel_d, f)
+        if os.path.islink(s):
+            if not (os.path.islink(t) and os.readlink(t) == os.readlink(s)):
+                if os.path.lexists(t): os.remove(t)
+                os.symlink(os.readlink(s), t); fixed += 1
+        elif os.path.islink(t) or not os.path.isfile(t) or not filecmp.cmp(s, t, shallow=False):
+            if os.path.lexists(t): os.remove(t)
+            shutil.copy2(s, t); fixed += 1
+print(fixed)
+PY
+)"
+  echo "$RUNTIME_NAME" > "$WINE_DIR/.azur-runtime"
+  rm -rf "$tmp"
+  echo "런타임 파일 ${n}개를 고쳤어요."
 }
 
 runtime_current() { [ -x "$WINE_DIR/bin/wine" ] && [ "$(cat "$WINE_DIR/.azur-runtime" 2>/dev/null)" = "$RUNTIME_NAME" ]; }
@@ -308,9 +400,9 @@ cmd_import_crossover() { # [보틀 이름]  CrossOver 보틀에 받아 둔 게�
 
 # ---- 설정 (settings.conf, key=value) ----
 SETTINGS="$APP_HOME/settings.conf"
-SETTING_KEYS="metal_hud retina left_cmd_ctrl game_hangul game_mode minimize_plug avx2 custom_resolution width height custom_fps fps"
+SETTING_KEYS="metal_hud retina left_cmd_ctrl game_hangul game_mode minimize_plug after_game avx2 battery_fps menu_bar screenshot_key auto_play custom_resolution width height custom_fps fps"
 setting_default() {
-  case "$1" in width) echo 1920 ;; height) echo 1200 ;; fps) echo 60 ;; game_hangul|game_mode|minimize_plug|avx2) echo 1 ;; *) echo 0 ;; esac
+  case "$1" in width) echo 1920 ;; height) echo 1200 ;; fps) echo 60 ;; game_hangul|game_mode|minimize_plug|avx2|battery_fps|menu_bar|screenshot_key) echo 1 ;; after_game) echo restore ;; *) echo 0 ;; esac
 }
 setting() { # key
   local v; v="$(grep -E "^$1=" "$SETTINGS" 2>/dev/null | tail -1 | cut -d= -f2-)" || true
@@ -321,7 +413,8 @@ cmd_get() { setting "${1:?설정 이름}"; }
 cmd_set() { # key value
   local k="${1:?설정 이름}" v="${2:?값}"
   case "$k" in
-    metal_hud|retina|left_cmd_ctrl|game_hangul|game_mode|minimize_plug|avx2|custom_resolution|custom_fps) [[ "$v" =~ ^[01]$ ]] || die "$k 는 0 또는 1이에요." ;;
+    after_game) [[ "$v" =~ ^(restore|quit|none)$ ]] || die "after_game 은 restore, quit, none 중 하나예요." ;;
+    metal_hud|retina|left_cmd_ctrl|game_hangul|game_mode|minimize_plug|avx2|battery_fps|menu_bar|screenshot_key|auto_play|custom_resolution|custom_fps) [[ "$v" =~ ^[01]$ ]] || die "$k 는 0 또는 1이에요." ;;
     width|height) [[ "$v" =~ ^[0-9]{3,5}$ ]] && [ "$v" -ge 640 ] || die "$k 는 640 이상의 숫자예요." ;;
     fps) [[ "$v" =~ ^[0-9]{2,3}$ ]] && [ "$v" -ge 30 ] || die "fps 는 30 이상의 숫자예요." ;;
     *) die "알 수 없는 설정: $k" ;;
@@ -487,48 +580,130 @@ plug_prepare() { # 넥슨 플러그를 켜기 전에 글꼴, Mono, 설정을 맞
 
 plug_launch() { # <기록 파일> [넥슨 플러그에 넘길 인자...]
   local log="$1"; shift
+  # 직전 실행 기록은 nexonplug-prev.log로 남겨요 (멈춘 뒤 다시 켜도 원인을 볼 수 있게).
+  [ "$log" = "$LOG_DIR/nexonplug.log" ] && [ -s "$log" ] && mv -f "$log" "$LOG_DIR/nexonplug-prev.log"
   wine_launch "$log" 'C:\Nexon\NexonPlug\NexonPlug.exe' "$@" $GL_FLAGS
-  start_plug_minimizer
+  start_game_watcher
 }
 
-# ---- 게임 중 넥슨 플러그 최소화 ----
-# 넥슨 플러그는 Wine에서 화면을 소프트웨어(SwiftShader)로 그려요. 게임이 전체 화면이어도 Wine은 넥슨 플러그 창이
-# 가려졌다고 알려 주지 않아서, 게임 내내 CPU를 50~60% 써요(M5 Pro에서 측정). 창을 최소화하면 0%가 돼요.
-# 게임이 새로 켜질 때마다 plugmin.exe(app/plugmin.c)로 한 번 최소화해요. 넥슨 플러그가 꺼지면 감시도 끝나요.
-PLUGMIN="$SCRIPT_DIR/plugmin.exe"
-PLUG_WATCH_PID="$APP_HOME/.plug-minimizer.pid"
-start_plug_minimizer() {
-  [ "$(setting minimize_plug)" = 1 ] && [ -f "$PLUGMIN" ] || return 0
-  local old; old="$(cat "$PLUG_WATCH_PID" 2>/dev/null)" || true
-  [ -n "$old" ] && kill -0 "$old" 2>/dev/null && return 0
-  ( trap '' HUP; plug_minimizer_loop ) </dev/null >/dev/null 2>&1 &
-  echo $! > "$PLUG_WATCH_PID"
+# 넥슨 플러그를 켜고, 로그인되면 바로 게임을 실행해요. 넥슨 플러그는 -gamecode:<NGM 게임 번호> -launchgame 인자를
+# 받으면 로그인 뒤 그 게임을 실행하고, 이미 켜져 있으면 두 번째 실행에서 받은 인자로 실행해요.
+NGM_GAMECODE=2887   # 아주르 프로밀리아
+PLAY_REQUEST="$APP_HOME/.play-requested"   # "<시작 시각> <기다릴 초> <플러그 숨기기 0/1>"
+NGM_PATTERN='\\NGM\\NGM(64)?\.exe'           # 게임을 켜는 NGM (명령줄은 읽지 않고 있는지만 봐요)
+cmd_play() {
+  need_prefix
+  # 게임 감시가 넥슨 플러그를 바로 최소화해서, 런처에서 게임으로 곧장 넘어가요. 정해진 시간 안에 게임이 안 켜지면
+  # (로그인이 필요하거나 점검 중) 넥슨 플러그를 다시 띄워요. 처음 켤 때는 Wine과 넥슨 플러그가 뜨고 로그인하는 데
+  # 1분 넘게 걸려서 150초, 넥슨 플러그가 이미 켜져 있으면 60초를 기다려요. NGM이 게임을 켜는 중이면 더 기다려요.
+  local hide=0 limit=150 warm=0
+  [ "$(setting minimize_plug)" = 1 ] && hide=1
+  [ "$(cmd_running)" = yes ] && running_in_prefix 'NexonPlug' && warm=1 && limit=60
+  echo "$(date +%s) $limit $hide" > "$PLAY_REQUEST"
+  if [ "$warm" = 1 ]; then
+    plug_launch /dev/null "-gamecode:$NGM_GAMECODE" -launchgame
+  else
+    plug_prepare
+    plug_launch "$LOG_DIR/nexonplug.log" "-gamecode:$NGM_GAMECODE" -launchgame
+  fi
+  echo "넥슨 플러그에 게임 실행을 맡겼어요. 로그인되면 게임이 켜져요."
 }
-plug_minimizer_loop() {
-  local last="" g
-  sleep 20   # 넥슨 플러그가 뜰 때까지
+
+# ---- 게임 감시 ----
+# 넥슨 플러그가 켜져 있는 동안 3초마다 게임을 살펴요. 넥슨 플러그가 꺼지면 감시도 끝나요.
+# - 게임이 켜지면 (minimize_plug): 넥슨 플러그 창을 최소화해요. 넥슨 플러그는 Wine에서 화면을 소프트웨어로 그리는데,
+#   Wine은 게임이 전체 화면이어도 넥슨 플러그 창이 가려졌다고 알려 주지 않아서 게임 내내 CPU를 50~60% 써요.
+#   NGM이 게임이 켜진 뒤에도 "게임 실행에 실패했습니다"를 알려 넥슨 플러그가 다시 뜨곤 해서 10, 30, 60초에 최소화해요.
+# - 게임이 멈추면: 게임 기록(Player.log)이 15초 넘게 그대로면 그때의 CPU 상태를 logs/stalls.log에 남겨요.
+#   CPU가 바쁘면 셰이더 컴파일 같은 일, 거의 0이면 무언가를 기다리는 거예요. 문제 보고에 들어가요.
+# - 게임이 꺼지면 (after_game): restore면 넥슨 플러그를 다시 띄우고, quit면 Wine을 모두 꺼요(배터리 아끼기).
+PLUGMIN="$SCRIPT_DIR/plugmin.exe"
+GAME_WATCH_PID="$APP_HOME/.game-watcher.pid"
+STALL_LOG="$LOG_DIR/stalls.log"
+start_game_watcher() {
+  local old; old="$(cat "$GAME_WATCH_PID" 2>/dev/null)" || true
+  [ -n "$old" ] && kill -0 "$old" 2>/dev/null && return 0
+  ( trap '' HUP; game_watch_loop ) </dev/null >/dev/null 2>&1 &
+  echo $! > "$GAME_WATCH_PID"
+}
+stall_snapshot() { # <게임 pid>  명령줄(로그인 토큰)은 읽지 않고 숫자만 남겨요
+  local g="$1" cpu thr mtl ws
+  cpu="$(ps -o %cpu= -p "$g" 2>/dev/null | tr -d ' ')"
+  thr="$(ps -M -p "$g" 2>/dev/null | cut -c1-57 | awk 'NR>1 {c=(NF>=8?$4:$2); if (c+0>5) {n++; s=s sprintf("%.0f ",c)}} END{printf "%d개 [%s]", n, s}')"
+  mtl="$(ps -axo %cpu=,comm= | awk '/MTLCompilerService/ {s+=$1} END{printf "%.0f", s}')"
+  ws="$(ps -axo %cpu=,comm= | awk '/WindowServer$/ {printf "%.0f", $1}')"
+  echo "$(date '+%T')   게임 CPU ${cpu:-?}%, 바쁜 스레드 ${thr}, Metal 셰이더 컴파일러 ${mtl}%, WindowServer ${ws}%"
+}
+game_watch_loop() {
+  set +e +o pipefail
+  local g last="" started=0 done_at="" stalled=0 now age t req limit hide
+  local pl="$DRIVE_C/users/crossover/AppData/LocalLow/manjuu/AzurPromilia/Player.log"
+  mkdir -p "$LOG_DIR"
+  sleep 4   # 넥슨 플러그 프로세스가 뜰 때까지
   while pgrep -f 'C:\\Nexon\\NexonPlug\\NexonPlug.exe' >/dev/null; do
-    g="$(pgrep -f 'C:\\Nexon\\AzurPromilia\\AzurPromilia.exe' | head -1)" || true
-    if [ -n "$g" ] && [ "$g" != "$last" ]; then
-      # 게임 창이 뜬 뒤(10초)에 최소화해요. Wine에서는 게임이 켜진 뒤에도 NGM이 "게임 실행에 실패했습니다"를
-      # 알려서 넥슨 플러그가 창을 다시 띄우곤 해서, 첫 1분 동안 두 번 더 최소화해요. 그 뒤로는 건드리지 않아요.
-      for wait in 10 20 30; do
-        sleep "$wait"
-        w "$PLUGMIN" >/dev/null 2>&1 || true
-      done
-      last="$g"
+    g="$(pgrep -f 'C:\\Nexon\\AzurPromilia\\AzurPromilia.exe' | head -1)"
+    now=$(date +%s)
+    # 게임 바로 시작: 게임이 켜질 때까지 넥슨 플러그를 숨겨 둬요. 1분이 지나도 안 켜지면 다시 띄워요.
+    if [ -f "$PLAY_REQUEST" ]; then
+      req=0 limit=60 hide=1
+      read -r req limit hide < "$PLAY_REQUEST" 2>/dev/null
+      [[ "$req" =~ ^[0-9]+$ ]] || req=0; [[ "$limit" =~ ^[0-9]+$ ]] || limit=60
+      if [ -n "$g" ]; then rm -f "$PLAY_REQUEST"
+      elif [ $((now - req)) -gt "$limit" ] && ! { [ $((now - req)) -le $((limit + 90)) ] && pgrep -f "$NGM_PATTERN" >/dev/null; }; then
+        # 시간이 지났고 NGM도 게임을 켜고 있지 않아요: 로그인이나 점검 안내를 볼 수 있게 넥슨 플러그를 다시 띄워요.
+        rm -f "$PLAY_REQUEST"; [ "$hide" = 1 ] && [ -f "$PLUGMIN" ] && w "$PLUGMIN" /restore >/dev/null 2>&1
+      elif [ "$hide" = 1 ] && [ -f "$PLUGMIN" ]; then w "$PLUGMIN" >/dev/null 2>&1
+      fi
+    fi
+    if [ -n "$g" ]; then
+      if [ "$g" != "$last" ]; then last="$g"; started=$now; done_at=""; stalled=0; fi
+      if [ "$(setting minimize_plug)" = 1 ] && [ -f "$PLUGMIN" ]; then
+        for t in 10 30 60; do
+          if [ $((now - started)) -ge $t ] && [[ "$done_at" != *" $t"* ]]; then
+            w "$PLUGMIN" >/dev/null 2>&1; done_at="$done_at $t"
+          fi
+        done
+      fi
+      if [ $((now - started)) -ge 90 ] && [ -f "$pl" ]; then   # 로딩이 끝난 뒤부터
+        age=$(( now - $(stat -f %m "$pl") ))
+        if [ "$age" -ge 15 ]; then
+          [ "$stalled" = 0 ] && echo "$(date '+%F %T') 멈춤? 게임 기록이 ${age}초째 그대로예요" >> "$STALL_LOG"
+          stalled=1
+          stall_snapshot "$g" >> "$STALL_LOG"
+        elif [ "$stalled" = 1 ]; then
+          echo "$(date '+%F %T') 다시 움직여요" >> "$STALL_LOG"; stalled=0
+        fi
+      fi
+    elif [ -n "$last" ]; then
+      [ "$stalled" = 1 ] && echo "$(date '+%F %T') 게임이 멈춘 채 꺼졌어요" >> "$STALL_LOG"
+      last=""; stalled=0
+      case "$(setting after_game)" in
+        restore) [ -f "$PLUGMIN" ] && w "$PLUGMIN" /restore >/dev/null 2>&1 ;;
+        quit) rm -f "$GAME_WATCH_PID"; cmd_stop >/dev/null 2>&1; exit 0 ;;
+      esac
+    fi
+    # 기록이 너무 커지지 않게 (1MB 넘으면 뒤쪽 절반만 남겨요)
+    if [ -f "$STALL_LOG" ] && [ "$(stat -f %z "$STALL_LOG")" -gt 1048576 ]; then
+      tail -c 524288 "$STALL_LOG" > "$STALL_LOG.tmp" && mv -f "$STALL_LOG.tmp" "$STALL_LOG"
     fi
     sleep 3
   done
-  rm -f "$PLUG_WATCH_PID"
+  rm -f "$GAME_WATCH_PID"
 }
 cmd_minimize_plug() { need_prefix; [ -f "$PLUGMIN" ] || die "plugmin.exe가 없어요 (mingw-w64로 빌드한 앱에 들어 있어요)."; w "$PLUGMIN" >/dev/null 2>&1 && echo "넥슨 플러그를 최소화했어요." || echo "최소화할 넥슨 플러그 창이 없어요."; }
+
+on_battery() { pmset -g batt 2>/dev/null | head -1 | grep -q 'Battery Power'; }
 
 wine_launch() { # <기록 파일> <Windows 프로그램> [인자...]  넥슨 플러그와 같은 환경으로 뒤에서 실행해요
   local log="$1"; shift
   local hud=0 dxmt_config=""
   [ "$(setting metal_hud)" = 1 ] && hud=1
-  [ "$(setting custom_fps)" = 1 ] && dxmt_config="d3d11.preferredMaxFrameRate=$(setting fps);"
+  if [ "$(setting custom_fps)" = 1 ]; then
+    dxmt_config="d3d11.preferredMaxFrameRate=$(setting fps);"
+  elif [ "$(setting battery_fps)" = 1 ] && on_battery; then
+    # 배터리로 돌 때는 60 FPS로 묶어서 발열과 배터리 소모를 줄여요. 넥슨 플러그를 켤 때의 전원 상태로 정해져요.
+    dxmt_config="d3d11.preferredMaxFrameRate=60;"
+  fi
   # 런타임 p4부터 Windows 프로그램을 각자 작은 앱 번들(게임 분류)로 실행해서 macOS 게임 모드를 받을 수 있어요.
   # 설정에서 끄면 예전처럼 실행해요.
   local no_bundle=""
@@ -574,6 +749,20 @@ cmd_open_url() { # <ngm://... | nexonplug://...>
     plug_launch /dev/null "$url"
   fi
   echo "넥슨 플러그에 로그인 결과를 넘겼어요."
+}
+
+cmd_live() { # 앱과 메뉴 막대가 쓰는 한 줄 상태
+  local plug=no game=no gcpu=0 g stage=none age=0 req=0
+  pgrep -f 'C:\\Nexon\\NexonPlug\\NexonPlug.exe' >/dev/null && plug=yes
+  g="$(pgrep -f 'C:\\Nexon\\AzurPromilia\\AzurPromilia.exe' | head -1)" || true
+  if [ -n "$g" ]; then game=yes; gcpu="$(ps -o %cpu= -p "$g" 2>/dev/null | tr -d ' ' | cut -d. -f1)"
+  elif [ -f "$PLAY_REQUEST" ]; then
+    # 게임시작을 누른 뒤 게임이 켜지기 전: 넥슨 플러그가 로그인하는 중(login)이거나 NGM이 게임을 켜는 중(ngm)
+    read -r req _ < "$PLAY_REQUEST" 2>/dev/null || true
+    [[ "$req" =~ ^[0-9]+$ ]] && age=$(( $(date +%s) - req ))
+    if pgrep -f "$NGM_PATTERN" >/dev/null; then stage=ngm; else stage=login; fi
+  fi
+  echo "running=$(cmd_running) plug=$plug game=$game game_cpu=${gcpu:-0} battery=$(on_battery && echo yes || echo no) stage=$stage play_age=$age"
 }
 
 cmd_running() { # 이 런처의 wineserver가 떠 있으면 yes, 서버 없이 Wine 프로세스만 남았으면 stale, 아니면 no
@@ -634,9 +823,12 @@ cmd_download_status() {
     local now size last_size last_time
     now=$(date +%s); size="$(du -sk "$DRIVE_C/Nexon" 2>/dev/null | awk '{print $1}')"
     [ -f "$stamp" ] && read -r last_size last_time < "$stamp"
-    if [ "${last_size:-}" != "$size" ]; then echo "$size $now" > "$stamp"; state=downloading
-    elif [ $((now - ${last_time:-$now})) -gt 120 ]; then state=stalled
-    else state=downloading; fi
+    # NGM은 게임을 켤 때도 잠깐 떠요. 직전 확인(5분 안)보다 크기가 늘었을 때만 받는 중으로 봐요.
+    if [ -z "${last_time:-}" ] || [ $((now - last_time)) -gt 300 ]; then echo "$size $now" > "$stamp"; state=none
+    elif [ "$last_size" != "$size" ]; then echo "$size $now" > "$stamp"; state=downloading
+    elif [ $((now - last_time)) -gt 120 ]; then state=stalled
+    else state=none; fi
+    [ "$state" = none ] && [ -f "$game/AzurPromilia.exe" ] && [ -z "$pieces" ] && state=installed
   elif [ -n "$pieces" ]; then
     state=stopped
   elif [ -f "$game/AzurPromilia.exe" ]; then
@@ -682,7 +874,8 @@ cmd_report() {
     echo "스왑: $(sysctl -n vm.swapusage 2>/dev/null)"
     echo '```'
     local f
-    for f in "$LOG_DIR/setup.log" "$LOG_DIR/nexonplug.log" "$DRIVE_C/ProgramData/Nexon/NGM/NGM.log" \
+    for f in "$LOG_DIR/setup.log" "$LOG_DIR/nexonplug.log" "$LOG_DIR/nexonplug-prev.log" "$STALL_LOG" \
+             "$DRIVE_C/ProgramData/Nexon/NGM/NGM.log" \
              "$DRIVE_C/users/crossover/AppData/Roaming/Nexon/nxDownloader/config/service.log"; do
       [ -f "$f" ] || continue
       echo; echo "#### $(basename "$f") (마지막 30줄)"; echo '```'
@@ -804,9 +997,59 @@ cmd_setup() { # [--runtime-from TAR.XZ] [--webview2-from DIR] [--import-crossove
   say "준비 완료. ./azurctl.sh plug 로 넥슨 플러그를 켜세요."
 }
 
+# ---- Wine 프로그램은 런처 밖에서 켜요 ----
+# 앱(런처)이 띄운 프로세스는 앱의 launchd 영역(pid/<런처>)을 물려받아요. 게임의 Metal 셰이더 컴파일러
+# (MTLCompilerService)도 그 영역에서 떠서, 런처를 끄거나 업데이트하면 launchd가 영역을 정리하며 그것까지 죽여요.
+# 그러면 게임이 멈추고 곧 wineserver도 꺼져서 넥슨 플러그까지 멈춰요. 그래서 Windows 프로그램을 켜는 명령은
+# 사용자 GUI 영역(gui/<uid>)의 일회용 launchd 작업으로 다시 실행해요. 작업이 끝나도 Wine은 launchd 아래에 남고,
+# 런처를 꺼도 게임은 그대로예요. AZUR_NO_DETACH=1이면 예전처럼 바로 실행해요.
+RUN_DIR="$APP_HOME/.run"
+run_detached() { # <명령> [인자...]  끝날 때까지 기다렸다가 출력과 종료 코드를 그대로 돌려줘요. 못 하면 125
+  local label="local.azur-promilia-launcher.$1.$(date +%s).$$" plist out rcf st rc
+  mkdir -p "$RUN_DIR" || return 125
+  find "$RUN_DIR" -type f -mtime +1 -delete 2>/dev/null || true   # 지난 작업이 남긴 파일
+  plist="$RUN_DIR/$label.plist"; out="$RUN_DIR/$label.out"; rcf="$RUN_DIR/$label.rc"
+  python3 -I - "$plist" "$label" "$out" "$rcf" "$SCRIPT_DIR/$(basename "$0")" "$@" <<'PLIST' || return 125
+import os, plistlib, sys
+plist, label, out, rcf, script, *args = sys.argv[1:]
+env = {"AZUR_DETACHED": "1", "AZUR_RC_FILE": rcf, "PATH": os.environ.get("PATH") or "/usr/bin:/bin:/usr/sbin:/sbin"}
+for k in ("TMPDIR", "LANG", "LC_ALL", "LC_CTYPE", "WINEDEBUG", "DXMT_LOG_LEVEL", "AZUR_APP_VERSION"):
+    if os.environ.get(k):
+        env[k] = os.environ[k]
+with open(plist, "wb") as f:
+    plistlib.dump({"Label": label, "ProgramArguments": ["/bin/bash", script, *args],
+                   "EnvironmentVariables": env, "StandardOutPath": out, "StandardErrorPath": out,
+                   "RunAtLoad": True, "AbandonProcessGroup": True,   # 작업이 끝나도 Wine 프로세스는 남겨요
+                   "ProcessType": "Interactive", "LimitLoadToSessionType": "Aqua"}, f)
+PLIST
+  launchctl bootstrap "gui/$(id -u)" "$plist" 2>/dev/null || { rm -f "$plist"; return 125; }
+  while [ ! -f "$rcf" ]; do
+    st="$(launchctl print "gui/$(id -u)/$label" 2>/dev/null | awk -F' = ' '$1 ~ /^[[:space:]]*state$/ {print $2; exit}')"
+    [ -z "$st" ] && break                                  # 작업이 사라졌어요
+    [ "$st" = "not running" ] && [ -e "$out" ] && break     # 종료 코드를 못 남기고 끝났어요
+    sleep 0.3
+  done
+  rc="$(cat "$rcf" 2>/dev/null)"; [[ "$rc" =~ ^[0-9]+$ ]] || rc=1
+  cat "$out" 2>/dev/null
+  launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
+  rm -f "$plist" "$out" "$rcf"
+  return "$rc"
+}
+
 sub="${1:-status}"; shift || true
+if [ -n "${AZUR_RC_FILE:-}" ]; then
+  # launchd 작업 안: 끝날 때 종료 코드를 남겨요 (run_detached가 기다려요).
+  trap 'echo $? > "$AZUR_RC_FILE"' EXIT
+elif [ -z "${AZUR_DETACHED:-}" ] && [ "${AZUR_NO_DETACH:-0}" != 1 ]; then
+  case "$sub" in
+    plug|play|open-url|game-direct|winecfg)
+      rc=0; run_detached "$sub" "$@" || rc=$?
+      [ "$rc" != 125 ] && exit "$rc"
+      warn "launchd 작업으로 실행하지 못해서 바로 실행해요 (런처를 끄면 게임도 멈출 수 있어요)." ;;
+  esac
+fi
 case "$sub" in
-  setup|install-runtime|init-prefix|install-webview2|install-plug|install-ngm|configure|link-game|import-crossover|plug|game-direct|stop|status|status-code|detect-sources|winecfg|shell|settings|get|set|running|install-fonts|install-mono|download-status|report|uninstall|apply-settings|open-url|minimize-plug)
+  setup|install-runtime|init-prefix|install-webview2|install-plug|install-ngm|configure|link-game|import-crossover|plug|game-direct|stop|status|status-code|detect-sources|winecfg|shell|settings|get|set|running|install-fonts|install-mono|download-status|report|uninstall|apply-settings|open-url|minimize-plug|play|live|verify-runtime|repair-runtime)
     "cmd_${sub//-/_}" "$@" ;;
-  *) sed -n '2,15p' "$0"; exit 1 ;;
+  *) sed -n '2,18p' "$0"; exit 1 ;;
 esac

@@ -13,13 +13,15 @@
 #
 # Usage: runtime/build-runtime.sh deps|fetch|configure|build|dxmt|bundle|package|all
 #        runtime/build-runtime.sh dxmt && runtime/build-runtime.sh repack <runtime .tar.xz>
+#        runtime/build-runtime.sh fetch && runtime/build-runtime.sh configure \
+#          && runtime/build-runtime.sh repack-server <runtime .tar.xz>   (only wineserver changed)
 # Env:   CX_VER (default 26.3.0), DXMT_VER (default v0.80), WORK (default ./runtime-work), JOBS
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 CX_VER="${CX_VER:-26.3.0}"
 DXMT_VER="${DXMT_VER:-v0.80}"
-PATCH_REV="${PATCH_REV:-p6}"   # bump when runtime/patches changes
+PATCH_REV="${PATCH_REV:-p7}"   # bump when runtime/patches changes
 WORK="${WORK:-$PWD/runtime-work}"
 JOBS="${JOBS:-$(sysctl -n hw.ncpu)}"
 SRC_URL="https://media.codeweavers.com/pub/crossover/source/crossover-sources-${CX_VER}.tar.gz"
@@ -263,6 +265,26 @@ cmd_repack() {
   cmd_package
 }
 
+# Re-package an existing runtime with wineserver rebuilt from the patched source (no full Wine rebuild).
+# Used when a revision only changes server/ (p7: fd-poll-guard). Needs fetch and configure first.
+cmd_repack_server() {
+  local base="${1:?usage: repack-server <runtime .tar.xz>}" minos
+  [ -f "$BLD/Makefile" ] || die "run fetch and configure first"
+  python3 -I "$HERE/patches/apply.py" "$SRC"
+  say "Building server/wineserver (macOS $MACOSX_DEPLOYMENT_TARGET and later)"
+  rm -f "$BLD"/server/*.o "$BLD/server/wineserver"   # always recompile with this deployment target
+  (cd "$BLD" && make -j"$JOBS" server/wineserver) > "$WORK/server-build.log" 2>&1 \
+    || { tail -30 "$WORK/server-build.log"; die "wineserver build failed"; }
+  minos="$(otool -l "$BLD/server/wineserver" | awk '/LC_BUILD_VERSION/{f=1} f&&/minos/{print $2; exit}')"
+  [ "$minos" = "$MACOSX_DEPLOYMENT_TARGET" ] || die "wineserver targets macOS $minos, expected $MACOSX_DEPLOYMENT_TARGET"
+  say "Unpacking $base"
+  rm -rf "$WORK/dist"; mkdir -p "$WORK/dist"
+  tar -xJf "$base" -C "$WORK/dist"
+  [ -x "$DIST/bin/wine" ] || die "no wine/ in $base"
+  install -m 755 "$BLD/server/wineserver" "$DIST/bin/wineserver"
+  cmd_package
+}
+
 cmd_package() {
   [ -x "$DIST/bin/wine" ] || die "run build first"
   local name="azur-runtime-cx${CX_VER}-dxmt${DXMT_VER#v}-${PATCH_REV}" out="$WORK/out"
@@ -270,8 +292,8 @@ cmd_package() {
   cat > "$DIST/SOURCES.txt" <<EOF
 This runtime was built by runtime/build-runtime.sh in https://github.com/SELCORE/azur-promilia-launcher
 
-Wine:  CodeWeavers CrossOver ${CX_VER} source (LGPL-2.1-or-later), with the small keyboard
-       patches in runtime/patches/apply.py (revision ${PATCH_REV})
+Wine:  CodeWeavers CrossOver ${CX_VER} source (LGPL-2.1-or-later), with the small patches
+       in runtime/patches/apply.py (revision ${PATCH_REV})
        ${SRC_URL}
 DXMT:  ${DXMT_VER} by Feifan He for CodeWeavers (LGPL-2.1-or-later)
        https://github.com/3Shain/dxmt/tree/${DXMT_VER}
@@ -290,6 +312,7 @@ EOF
 case "${1:-all}" in
   deps) cmd_deps ;; fetch) cmd_fetch ;; configure) cmd_configure ;; build) cmd_build ;;
   bundle) cmd_bundle ;; package) cmd_package ;; dxmt) cmd_dxmt ;; repack) shift; cmd_repack "$@" ;;
+  repack-server) shift; cmd_repack_server "$@" ;;
   all) cmd_deps; cmd_fetch; cmd_configure; cmd_build; cmd_dxmt; cmd_bundle; cmd_package ;;
-  *) sed -n '2,14p' "$0"; exit 1 ;;
+  *) sed -n '2,16p' "$0"; exit 1 ;;
 esac

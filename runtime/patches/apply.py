@@ -47,6 +47,15 @@ Running it again on an already patched tree is fine: patches that are already in
    a hard link to the loader inside a small app bundle with an Info.plist (game category,
    LSSupportsGameMode) and an ntdll.so link. macOS then registers it as an app named after the
    .exe and marked as a game. Set AZUR_NO_APP_BUNDLE=1 to start programs the old way (p4).
+
+6. fd-poll-guard (server/fd.c)
+   Objects without a Unix fd (device files, pipes, sockets that are not set up yet) get a pseudo fd
+   that is not in wineserver's poll array (poll_index -1). Some paths still call set_fd_events() on
+   them (an async on the read/write queue being reselected, POLLERR handling), and upstream then
+   fails assert(poll_users[user] == fd) and wineserver aborts. Every Windows program is left
+   waiting on a server that is gone: the game and Nexon Plug freeze with two threads spinning.
+   It shows up a minute or so into Azur Promilia (after the anti-cheat's device probes). There is
+   nothing to poll for such an fd, so ignore the call and say so once on stderr (p7).
 """
 import os
 import sys
@@ -526,5 +535,25 @@ patch("dlls/ntdll/unix/loader.c", "app-bundle always",
         replace_wineloader_path_with_link( &(argv[1]), image_path );""",
       """    if (getenv("WINEDLLPATH") || !getenv("AZUR_NO_APP_BUNDLE"))  /* azur app-bundle: ntdll.so is linked next to it */
         replace_wineloader_path_with_link( &(argv[1]), image_path );""")
+
+# ---------------------------------------------------------------- 6. fd-poll-guard
+patch("server/fd.c", "fd-poll-guard",
+      """    int user = fd->poll_index;
+    assert( poll_users[user] == fd );
+
+    set_fd_epoll_events( fd, user, events );""",
+      """    int user = fd->poll_index;
+
+    /* azur fd-poll-guard: pseudo fds (devices, pipes, sockets not set up yet) are not in the poll
+     * array (poll_index -1). Asserting here takes the whole wineserver down; there is nothing to poll. */
+    if (user < 0 || user >= nb_users || poll_users[user] != fd)
+    {
+        static int warned;
+        if (!warned++)
+            fprintf( stderr, "wineserver: set_fd_events: fd %p is not polled (index %d), ignored\\n", fd, user );
+        return;
+    }
+
+    set_fd_epoll_events( fd, user, events );""")
 
 print("all patches applied")
