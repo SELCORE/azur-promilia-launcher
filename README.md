@@ -45,6 +45,7 @@ CrossOver 없이 무료 Wine과 DXMT로 넥슨 플러그와 아주르 프로밀�
 git clone https://github.com/SELCORE/azur-promilia-launcher.git
 cd azur-promilia-launcher
 ./build-app.sh            # dist/Azur Promilia Launcher.app 이 만들어져요 (Xcode 명령줄 도구 필요)
+                          # 넥슨 플러그 최소화 도우미(plugmin.exe)는 mingw-w64가 있을 때만 들어가요: brew install mingw-w64
 open "dist/Azur Promilia Launcher.app"
 ```
 
@@ -82,6 +83,8 @@ open "dist/Azur Promilia Launcher.app"
 | 왼쪽 CMD를 CTRL로 할당 | 왼쪽 ⌘ 키를 Ctrl 키로 써요 |
 | 게임 안 한글 입력 | 맥 입력 소스가 한국어일 때 게임 채팅에 완성된 한글을 넣어요 (기본 켜짐) |
 | macOS 게임 모드 | 게임을 macOS가 게임 앱으로 알아보게 해서, 전체 화면일 때 게임 모드(CPU·GPU 우선, 백그라운드 작업 줄이기)를 받아요. 활성 상태 보기에도 `wine` 대신 `AzurPromilia.exe`처럼 프로그램 이름이 나와요 (기본 켜짐, 런타임 p4부터) |
+| 게임 중 넥슨 플러그 최소화 | 게임이 켜지면 넥슨 플러그 창을 최소화해요. 넥슨 플러그는 뒤에 있어도 화면을 계속 그려서 CPU를 50~60% 써요. 최소화하면 0%가 돼요. Dock에서 다시 열 수 있어요 (기본 켜짐) |
+| AVX2 명령어 (Rosetta) | Rosetta가 게임에 AVX/AVX2/FMA를 알려서, 게임의 Unity Burst 코드가 SSE2 대신 AVX2 버전으로 돌아요. M5 Pro 필드에서 FPS 중간값이 64에서 67로 올랐어요. 게임이 자주 튕기면 꺼 보세요 (기본 켜짐) |
 | 사용자 정의 해상도 | 넥슨 플러그를 켤 때마다 게임 해상도를 이 값으로 맞춰요 (게임 안 설정보다 우선) |
 | 사용자 지정 모니터 주사율 | 게임 주사율과 DXMT 프레임 상한을 이 값으로 맞춰요. FPS가 60 아래로 묶일 때 켜세요 |
 
@@ -165,7 +168,9 @@ open "dist/Azur Promilia Launcher.app"
   - 지금은 APFS 복제로 따로 된 사본을 만들어서, 한쪽을 지워도 다른 쪽은 남아요.
 - **넥슨 플러그 창 표시**
   - 소프트웨어 렌더링 옵션(`--use-gl=swiftshader --use-angle=swiftshader --in-process-gpu`)으로 켜요. 그래야 화면이 나와요.
-  - 그래서 넥슨 플러그 창이 화면에 보이는 동안에는 CPU를 40~50% 써요. 창이 가려지면(게임을 전체 화면으로 할 때) 거의 쓰지 않아요.
+  - 그래서 넥슨 플러그 창이 열려 있는 동안 CPU를 50~60% 써요. Wine은 창이 가려진 걸 알려 주지 않아서, 게임을 전체 화면으로 해도 계속 써요.
+  - 0.4.5부터 게임이 켜지면 런처가 넥슨 플러그 창을 최소화해요(설정의 **게임 중 넥슨 플러그 최소화**). 그러면 0%가 돼요. M5 Pro 전투 장면에서 FPS가 51.6에서 53.7로 올랐어요.
+  - Wine에서는 게임이 켜진 뒤에도 넥슨 플러그가 "게임 실행에 실패했습니다"를 띄울 수 있어요. 게임은 정상이니 **확인**을 누르면 돼요.
 - **게임 중 맥 전체가 멈춤 (런타임 p6에서 고침)**
   - DXMT v0.80의 GPU 셰이더 버그 때문에, 지오메트리 셰이더를 쓰는 장면에서 GPU가 수십 초 멈추고 화면 전체가 굳었어요. 이때는 강제로 꺼야 했어요 ([3Shain/dxmt#200](https://github.com/3Shain/dxmt/issues/200)).
   - 런타임 p6은 DXMT v0.80에 개발자의 수정(aadf0fb, 46911d7)과 이슈의 안전장치를 넣어 직접 빌드해요 ([`runtime/patches/dxmt-apply.py`](runtime/patches/dxmt-apply.py)).

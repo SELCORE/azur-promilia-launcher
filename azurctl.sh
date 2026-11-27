@@ -6,11 +6,12 @@
 #   ./azurctl.sh stop             이 런처의 Wine 프로세스를 모두 종료해요
 #   ./azurctl.sh status           설치 상태를 보여줘요
 #   ./azurctl.sh settings         설정 보기 / set <이름> <값> 으로 바꾸기
-#     metal_hud(0/1) retina(0/1) left_cmd_ctrl(0/1) custom_resolution(0/1) width height custom_fps(0/1) fps
+#     metal_hud(0/1) retina(0/1) left_cmd_ctrl(0/1) minimize_plug(0/1) avx2(0/1) custom_resolution(0/1) width height custom_fps(0/1) fps
 #
 # 개별 단계: install-runtime, init-prefix, install-webview2, install-plug, install-ngm,
 #           configure, link-game, import-crossover, game-direct, winecfg, shell,
 #           open-url <ngm://... | nexonplug://...> (브라우저 로그인 결과를 넥슨 플러그에 넘겨요. 런처 앱이 불러요)
+#           minimize-plug (넥슨 플러그 창 최소화. 게임이 켜지면 런처가 알아서 해요)
 # 내려받는 곳: 이 저장소의 GitHub 릴리스(직접 빌드한 Wine + DXMT 런타임), Microsoft(WebView2), 넥슨 공식 서버.
 set -euo pipefail
 
@@ -307,9 +308,9 @@ cmd_import_crossover() { # [보틀 이름]  CrossOver 보틀에 받아 둔 게�
 
 # ---- 설정 (settings.conf, key=value) ----
 SETTINGS="$APP_HOME/settings.conf"
-SETTING_KEYS="metal_hud retina left_cmd_ctrl game_hangul game_mode custom_resolution width height custom_fps fps"
+SETTING_KEYS="metal_hud retina left_cmd_ctrl game_hangul game_mode minimize_plug avx2 custom_resolution width height custom_fps fps"
 setting_default() {
-  case "$1" in width) echo 1920 ;; height) echo 1200 ;; fps) echo 60 ;; game_hangul|game_mode) echo 1 ;; *) echo 0 ;; esac
+  case "$1" in width) echo 1920 ;; height) echo 1200 ;; fps) echo 60 ;; game_hangul|game_mode|minimize_plug|avx2) echo 1 ;; *) echo 0 ;; esac
 }
 setting() { # key
   local v; v="$(grep -E "^$1=" "$SETTINGS" 2>/dev/null | tail -1 | cut -d= -f2-)" || true
@@ -320,7 +321,7 @@ cmd_get() { setting "${1:?설정 이름}"; }
 cmd_set() { # key value
   local k="${1:?설정 이름}" v="${2:?값}"
   case "$k" in
-    metal_hud|retina|left_cmd_ctrl|game_hangul|game_mode|custom_resolution|custom_fps) [[ "$v" =~ ^[01]$ ]] || die "$k 는 0 또는 1이에요." ;;
+    metal_hud|retina|left_cmd_ctrl|game_hangul|game_mode|minimize_plug|avx2|custom_resolution|custom_fps) [[ "$v" =~ ^[01]$ ]] || die "$k 는 0 또는 1이에요." ;;
     width|height) [[ "$v" =~ ^[0-9]{3,5}$ ]] && [ "$v" -ge 640 ] || die "$k 는 640 이상의 숫자예요." ;;
     fps) [[ "$v" =~ ^[0-9]{2,3}$ ]] && [ "$v" -ge 30 ] || die "fps 는 30 이상의 숫자예요." ;;
     *) die "알 수 없는 설정: $k" ;;
@@ -487,7 +488,41 @@ plug_prepare() { # 넥슨 플러그를 켜기 전에 글꼴, Mono, 설정을 맞
 plug_launch() { # <기록 파일> [넥슨 플러그에 넘길 인자...]
   local log="$1"; shift
   wine_launch "$log" 'C:\Nexon\NexonPlug\NexonPlug.exe' "$@" $GL_FLAGS
+  start_plug_minimizer
 }
+
+# ---- 게임 중 넥슨 플러그 최소화 ----
+# 넥슨 플러그는 Wine에서 화면을 소프트웨어(SwiftShader)로 그려요. 게임이 전체 화면이어도 Wine은 넥슨 플러그 창이
+# 가려졌다고 알려 주지 않아서, 게임 내내 CPU를 50~60% 써요(M5 Pro에서 측정). 창을 최소화하면 0%가 돼요.
+# 게임이 새로 켜질 때마다 plugmin.exe(app/plugmin.c)로 한 번 최소화해요. 넥슨 플러그가 꺼지면 감시도 끝나요.
+PLUGMIN="$SCRIPT_DIR/plugmin.exe"
+PLUG_WATCH_PID="$APP_HOME/.plug-minimizer.pid"
+start_plug_minimizer() {
+  [ "$(setting minimize_plug)" = 1 ] && [ -f "$PLUGMIN" ] || return 0
+  local old; old="$(cat "$PLUG_WATCH_PID" 2>/dev/null)" || true
+  [ -n "$old" ] && kill -0 "$old" 2>/dev/null && return 0
+  ( trap '' HUP; plug_minimizer_loop ) </dev/null >/dev/null 2>&1 &
+  echo $! > "$PLUG_WATCH_PID"
+}
+plug_minimizer_loop() {
+  local last="" g
+  sleep 20   # 넥슨 플러그가 뜰 때까지
+  while pgrep -f 'C:\\Nexon\\NexonPlug\\NexonPlug.exe' >/dev/null; do
+    g="$(pgrep -f 'C:\\Nexon\\AzurPromilia\\AzurPromilia.exe' | head -1)" || true
+    if [ -n "$g" ] && [ "$g" != "$last" ]; then
+      # 게임 창이 뜬 뒤(10초)에 최소화해요. Wine에서는 게임이 켜진 뒤에도 NGM이 "게임 실행에 실패했습니다"를
+      # 알려서 넥슨 플러그가 창을 다시 띄우곤 해서, 첫 1분 동안 두 번 더 최소화해요. 그 뒤로는 건드리지 않아요.
+      for wait in 10 20 30; do
+        sleep "$wait"
+        w "$PLUGMIN" >/dev/null 2>&1 || true
+      done
+      last="$g"
+    fi
+    sleep 3
+  done
+  rm -f "$PLUG_WATCH_PID"
+}
+cmd_minimize_plug() { need_prefix; [ -f "$PLUGMIN" ] || die "plugmin.exe가 없어요 (mingw-w64로 빌드한 앱에 들어 있어요)."; w "$PLUGMIN" >/dev/null 2>&1 && echo "넥슨 플러그를 최소화했어요." || echo "최소화할 넥슨 플러그 창이 없어요."; }
 
 wine_launch() { # <기록 파일> <Windows 프로그램> [인자...]  넥슨 플러그와 같은 환경으로 뒤에서 실행해요
   local log="$1"; shift
@@ -498,11 +533,15 @@ wine_launch() { # <기록 파일> <Windows 프로그램> [인자...]  넥슨 플
   # 설정에서 끄면 예전처럼 실행해요.
   local no_bundle=""
   [ "$(setting game_mode)" = 1 ] || no_bundle=1
+  # Rosetta가 CPU에 AVX/AVX2/FMA가 있다고 알려요. 게임의 Unity Burst 코드가 SSE2 대신 AVX2 버전으로 돌아서,
+  # M5 Pro 필드에서 가만히 섰을 때 FPS 중간값이 64에서 67로 올랐어요. 인텔 맥에서는 아무 영향이 없어요.
+  local avx=""
+  [ "$(setting avx2)" = 1 ] && avx=1
   # 넥슨 플러그 -> NGM -> 게임 순서로 켜지면서 이 환경 변수가 게임까지 이어져요.
   # shellcheck disable=SC2086
   nohup env WINEPREFIX="$PREFIX" WINEDEBUG="${WINEDEBUG:--all}" WINEMSYNC=1 WINEESYNC=1 DXMT_LOG_PATH="$LOG_DIR" \
     DYLD_FALLBACK_LIBRARY_PATH="$WINE_DIR/lib:/usr/lib" MTL_HUD_ENABLED="$hud" DXMT_CONFIG="$dxmt_config" DXMT_LOG_LEVEL="${DXMT_LOG_LEVEL:-error}" \
-    ${no_bundle:+AZUR_NO_APP_BUNDLE=1} \
+    ${no_bundle:+AZUR_NO_APP_BUNDLE=1} ${avx:+ROSETTA_ADVERTISE_AVX=1} \
     "$WINE_DIR/bin/wine" "$@" >"$log" 2>&1 &
 }
 
@@ -767,7 +806,7 @@ cmd_setup() { # [--runtime-from TAR.XZ] [--webview2-from DIR] [--import-crossove
 
 sub="${1:-status}"; shift || true
 case "$sub" in
-  setup|install-runtime|init-prefix|install-webview2|install-plug|install-ngm|configure|link-game|import-crossover|plug|game-direct|stop|status|status-code|detect-sources|winecfg|shell|settings|get|set|running|install-fonts|install-mono|download-status|report|uninstall|apply-settings|open-url)
+  setup|install-runtime|init-prefix|install-webview2|install-plug|install-ngm|configure|link-game|import-crossover|plug|game-direct|stop|status|status-code|detect-sources|winecfg|shell|settings|get|set|running|install-fonts|install-mono|download-status|report|uninstall|apply-settings|open-url|minimize-plug)
     "cmd_${sub//-/_}" "$@" ;;
-  *) sed -n '2,14p' "$0"; exit 1 ;;
+  *) sed -n '2,15p' "$0"; exit 1 ;;
 esac

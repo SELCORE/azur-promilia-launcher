@@ -5,7 +5,7 @@
 # 필요한 것: Xcode 명령줄 도구 (xcode-select --install)
 set -euo pipefail
 
-VERSION="0.4.4"
+VERSION="0.4.5"
 DIR="$(cd "$(dirname "$0")" && pwd)"
 OUT="${1:-$DIR/dist/Azur Promilia Launcher.app}"
 EXE="AzurPromiliaLauncher"
@@ -19,6 +19,13 @@ swiftc -O -parse-as-library -swift-version 5 \
   -o "$OUT/Contents/MacOS/$EXE" "$DIR/app/Launcher.swift"
 
 cp "$DIR/azurctl.sh" "$DIR/extract_zip.py" "$DIR/rename_font.py" "$OUT/Contents/Resources/"
+
+# 게임 중 넥슨 플러그를 최소화하는 작은 Windows 도우미 (app/plugmin.c). mingw-w64가 있을 때만 만들어요.
+if command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1; then
+  x86_64-w64-mingw32-gcc -O2 -s -municode -mconsole -o "$OUT/Contents/Resources/plugmin.exe" "$DIR/app/plugmin.c"
+else
+  echo "주의: x86_64-w64-mingw32-gcc가 없어서 plugmin.exe 없이 만들어요. 게임 중 넥슨 플러그 최소화가 동작하지 않아요 (brew install mingw-w64)." >&2
+fi
 chmod +x "$OUT/Contents/Resources/azurctl.sh"
 
 # 아이콘: app/local-icon.png(개인용, 저장소에 안 올라감)가 있으면 그걸, 없으면 공개용 app/icon.png를 써요.

@@ -70,6 +70,8 @@ final class LauncherModel: ObservableObject {
     @Published var leftCmdCtrl = false
     @Published var gameHangul = true
     @Published var gameMode = true
+    @Published var minimizePlug = true
+    @Published var avx2 = true
     @Published var customResolution = false
     @Published var width = "1920"
     @Published var height = "1200"
@@ -271,6 +273,8 @@ final class LauncherModel: ObservableObject {
         leftCmdCtrl = kv["left_cmd_ctrl"] == "1"
         gameHangul = kv["game_hangul"] != "0"
         gameMode = kv["game_mode"] != "0"
+        minimizePlug = kv["minimize_plug"] != "0"
+        avx2 = kv["avx2"] != "0"
         customResolution = kv["custom_resolution"] == "1"
         customFps = kv["custom_fps"] == "1"
         width = kv["width"] ?? "1920"
@@ -551,6 +555,12 @@ struct SettingsSection: View {
             option("macOS 게임 모드",
                    "게임을 macOS가 게임으로 알아보게 해서, 전체 화면일 때 게임 모드(CPU·GPU 우선, 백그라운드 작업 줄이기)를 받아요. 넥슨 플러그를 다시 켜면 적용돼요.",
                    $m.gameMode) { m.save("game_mode", $0) }
+            option("게임 중 넥슨 플러그 최소화",
+                   "게임이 켜지면 넥슨 플러그 창을 최소화해요. 넥슨 플러그는 뒤에 있어도 화면을 계속 그려서 CPU를 50~60% 써요. 최소화하면 그만 그려요. Dock에서 다시 열 수 있어요.",
+                   $m.minimizePlug) { m.save("minimize_plug", $0) }
+            option("AVX2 명령어 (Rosetta)",
+                   "Rosetta가 게임에 AVX2를 쓸 수 있다고 알려서, 게임 일부(Unity Burst)가 더 빠른 코드로 돌아요. M5 Pro 필드에서 FPS가 64에서 67로 올랐어요. 게임이 자주 튕기면 꺼 보세요. 넥슨 플러그를 다시 켜면 적용돼요.",
+                   $m.avx2) { m.save("avx2", $0) }
 
             VStack(alignment: .leading, spacing: 6) {
                 option("사용자 정의 해상도", "켜 두면 넥슨 플러그를 켤 때마다 게임 해상도를 이 값으로 맞춰요.", $m.customResolution) {
