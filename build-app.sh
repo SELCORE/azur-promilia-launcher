@@ -5,7 +5,7 @@
 # 필요한 것: Xcode 명령줄 도구 (xcode-select --install)
 set -euo pipefail
 
-VERSION="0.4.2"
+VERSION="0.4.3"
 DIR="$(cd "$(dirname "$0")" && pwd)"
 OUT="${1:-$DIR/dist/Azur Promilia Launcher.app}"
 EXE="AzurPromiliaLauncher"
@@ -51,6 +51,13 @@ cat > "$OUT/Contents/Info.plist" <<EOF
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>LSApplicationCategoryType</key><string>public.app-category.games</string>
   <key>NSHighResolutionCapable</key><true/>
+  <key>CFBundleURLTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleURLName</key><string>Nexon Plug login</string>
+      <key>CFBundleURLSchemes</key><array><string>ngm</string><string>nexonplug</string></array>
+    </dict>
+  </array>
   $ICON_KEY
 </dict>
 </plist>

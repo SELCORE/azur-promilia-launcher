@@ -9,7 +9,8 @@
 #     metal_hud(0/1) retina(0/1) left_cmd_ctrl(0/1) custom_resolution(0/1) width height custom_fps(0/1) fps
 #
 # 개별 단계: install-runtime, init-prefix, install-webview2, install-plug, install-ngm,
-#           configure, link-game, import-crossover, game-direct, winecfg, shell
+#           configure, link-game, import-crossover, game-direct, winecfg, shell,
+#           open-url <ngm://... | nexonplug://...> (브라우저 로그인 결과를 넥슨 플러그에 넘겨요. 런처 앱이 불러요)
 # 내려받는 곳: 이 저장소의 GitHub 릴리스(직접 빌드한 Wine + DXMT 런타임), Microsoft(WebView2), 넥슨 공식 서버.
 set -euo pipefail
 
@@ -29,6 +30,7 @@ RUNTIME_SHA256="71f6262552da28fbb88864557c7fd453082c75804ecc16c32a058848af7a2a3e
 
 PLUG_URL="https://platform.nexon.com/NexonPlug/Install/InstallData/65538.z00"
 NGM_URL="https://platform.nexon.com/NGM/Bin"
+NGM_EXE='C:\ProgramData\Nexon\NGM\NGM.exe'
 UA="Mozilla/5.0"
 # Wine에서는 Chromium 계열(넥슨 플러그, WebView2) 화면의 GPU 렌더링이 검게 나와서 소프트웨어 렌더링을 써요.
 GL_FLAGS="--use-gl=swiftshader --use-angle=swiftshader --in-process-gpu"
@@ -355,6 +357,8 @@ def load(path):
             m = re.match(r'"((?:[^"\\]|\\.)*)"=(.*)$', line)
             if m:
                 keys[cur][m.group(1).replace('\\"', '"').replace("\\\\", "\\").lower()] = m.group(2)
+        elif cur is not None and line.startswith("@="):   # 키의 기본값
+            keys[cur]["@"] = line[2:]
     return keys
 
 hives = {"HKCU": load(os.path.join(prefix, "user.reg")), "HKLM": load(os.path.join(prefix, "system.reg"))}
@@ -370,7 +374,8 @@ for w in wants:
     data = "dword:%08x" % int(value) if typ == "dword" else '"%s"' % esc(value)
     if have is not None and have.get(name.lower()) == data:
         continue
-    sections.setdefault("%s\\%s" % (roots[hive], key), []).append('"%s"=%s' % (esc(name), data))
+    line = "@=%s" % data if name == "@" else '"%s"=%s' % (esc(name), data)
+    sections.setdefault("%s\\%s" % (roots[hive], key), []).append(line)
 if sections:
     with open(out, "w", encoding="utf-8") as f:
         f.write("REGEDIT4\n")
@@ -396,6 +401,18 @@ apply_settings() { # 넥슨 플러그를 켜기 직전에 적용해요 (게임�
   # 게임은 자기 창의 IME를 꺼 둬서 맥 한글 입력기가 조합을 못 해요. 런타임(p2 이상)의 ImeFallback이
   # 게임 창의 키를 맥 입력기에 먼저 보내고 완성된 글자를 게임에 넘겨요. 넥슨 플러그에는 영향이 없어요.
   vals+=("HKCU|Software\Wine\AppDefaults\AzurPromilia.exe\Mac Driver|ImeFallback|sz|$(yn "$(setting game_hangul)")")
+  # 브라우저 로그인(구글, 애플 등)은 끝나면 링크로 돌아와요. 한국 넥슨 플러그는 ngm:// 링크를 NGM이 받아
+  # 넥슨 플러그에 넘기고, 일본 쪽 로그인은 nexonplug:// 링크를 넥슨 플러그가 직접 받아요. Windows에서는 넥슨
+  # 설치 프로그램이 이 연결을 해 두는데, 이 런처는 설치 프로그램을 쓰지 않아서 직접 해요.
+  # 맥(Safari)에서 열린 링크는 런처 앱이 받아서 open-url로 넘겨요.
+  local proto='Software\Classes\nexonplug'
+  vals+=("HKLM|$proto|@|sz|URL:nexonplug")
+  vals+=("HKLM|$proto|URL Protocol|sz|")
+  vals+=("HKLM|$proto\shell\open\command|@|sz|\"C:\\Nexon\\NexonPlug\\NexonPlug.exe\" \"%1\" $GL_FLAGS")
+  proto='Software\Classes\ngm'
+  vals+=("HKLM|$proto|@|sz|URL:ngm protocol")
+  vals+=("HKLM|$proto|URL Protocol|sz|")
+  vals+=("HKLM|$proto\shell\open\command|@|sz|\"$NGM_EXE\" \"%1\"")
   if [ "$(setting custom_resolution)" = 1 ]; then
     vals+=("HKCU|$k|Screenmanager Resolution Width_h182942802|dword|$(setting width)")
     vals+=("HKCU|$k|Screenmanager Resolution Height_h2627697771|dword|$(setting height)")
@@ -416,6 +433,12 @@ disable_nexon_launcher_service() {
 }
 
 cmd_plug() {
+  plug_prepare
+  plug_launch "$LOG_DIR/nexonplug.log"
+  echo "넥슨 플러그를 켰어요."
+}
+
+plug_prepare() { # 넥슨 플러그를 켜기 전에 글꼴, Mono, 설정을 맞춰요
   need_prefix
   [ -f "$DRIVE_C/Nexon/NexonPlug/NexonPlug.exe" ] || die "넥슨 플러그가 없어요. 먼저 ./azurctl.sh setup"
   mkdir -p "$LOG_DIR"
@@ -429,6 +452,15 @@ cmd_plug() {
     [ -n "$stale" ] && kill -9 $stale 2>/dev/null
   fi
   apply_settings
+}
+
+plug_launch() { # <기록 파일> [넥슨 플러그에 넘길 인자...]
+  local log="$1"; shift
+  wine_launch "$log" 'C:\Nexon\NexonPlug\NexonPlug.exe' "$@" $GL_FLAGS
+}
+
+wine_launch() { # <기록 파일> <Windows 프로그램> [인자...]  넥슨 플러그와 같은 환경으로 뒤에서 실행해요
+  local log="$1"; shift
   local hud=0 dxmt_config=""
   [ "$(setting metal_hud)" = 1 ] && hud=1
   [ "$(setting custom_fps)" = 1 ] && dxmt_config="d3d11.preferredMaxFrameRate=$(setting fps);"
@@ -441,8 +473,38 @@ cmd_plug() {
   nohup env WINEPREFIX="$PREFIX" WINEDEBUG="${WINEDEBUG:--all}" WINEMSYNC=1 WINEESYNC=1 DXMT_LOG_PATH="$LOG_DIR" \
     DYLD_FALLBACK_LIBRARY_PATH="$WINE_DIR/lib:/usr/lib" MTL_HUD_ENABLED="$hud" DXMT_CONFIG="$dxmt_config" DXMT_LOG_LEVEL="${DXMT_LOG_LEVEL:-error}" \
     ${no_bundle:+AZUR_NO_APP_BUNDLE=1} \
-    "$WINE_DIR/bin/wine" 'C:\Nexon\NexonPlug\NexonPlug.exe' $GL_FLAGS >"$LOG_DIR/nexonplug.log" 2>&1 &
-  echo "넥슨 플러그를 켰어요."
+    "$WINE_DIR/bin/wine" "$@" >"$log" 2>&1 &
+}
+
+# 브라우저 로그인을 마친 Safari가 넘긴 링크를 Windows에서처럼 전해요.
+# - ngm://       한국 넥슨 플러그의 브라우저 로그인. NGM.exe가 받아서 켜져 있는 넥슨 플러그에 넘겨요.
+# - nexonplug:// 일본 쪽 로그인. NexonPlug.exe를 한 번 더 실행하면 켜져 있는 넥슨 플러그가 받아 가요.
+# 링크에 로그인 토큰이 들어 있어서 화면에도 기록에도 남기지 않아요.
+cmd_open_url() { # <ngm://... | nexonplug://...>
+  local url="${1:-}"
+  local ok='^([Nn][Gg][Mm]|[Nn][Ee][Xx][Oo][Nn][Pp][Ll][Uu][Gg]):[]A-Za-z0-9._~:/?#@!$&()*+,;=%[-]*$'
+  # Windows 명령줄로 넘어가니 공백, 따옴표, 줄바꿈이 든 링크는 넘기지 않아요.
+  [[ ${#url} -le 16384 && $url =~ $ok ]] || die "넥슨 링크가 아니거나 모양이 이상해서 넘기지 않았어요."
+  need_prefix
+  local to_ngm=""
+  case "$url" in [Nn][Gg][Mm]:*) to_ngm=1 ;; esac
+  # 로그인 결과는 켜져 있는 넥슨 플러그가 받아야 해요. 꺼져 있으면 먼저 켜요.
+  if ! { [ "$(cmd_running)" = yes ] && running_in_prefix 'NexonPlug'; }; then
+    plug_prepare
+    if [ -z "$to_ngm" ]; then
+      plug_launch "$LOG_DIR/nexonplug.log" "$url"
+      echo "넥슨 플러그를 켜면서 로그인 결과를 넘겼어요."
+      return
+    fi
+    plug_launch "$LOG_DIR/nexonplug.log"
+  fi
+  if [ -n "$to_ngm" ]; then
+    [ -f "$DRIVE_C/ProgramData/Nexon/NGM/NGM.exe" ] || die "NGM이 없어요. 먼저 ./azurctl.sh install-ngm"
+    wine_launch /dev/null "$NGM_EXE" "$url"
+  else
+    plug_launch /dev/null "$url"
+  fi
+  echo "넥슨 플러그에 로그인 결과를 넘겼어요."
 }
 
 cmd_running() { # 이 런처의 wineserver가 떠 있으면 yes, 서버 없이 Wine 프로세스만 남았으면 stale, 아니면 no
@@ -519,8 +581,10 @@ cmd_download_status() {
 # ---- 문제 보고 ----
 # 상태와 로그 끝부분을 모아요. 로그인 토큰, 이메일, 맥 사용자 이름, 넥슨 회원 번호는 가려요.
 redact() {
-  sed -E -e 's/(NP[0-9]+:auth:|passport:)[^ "\x27}]*/\1[가림]/g' \
+  # macOS sed는 \x27을 모르니 작은따옴표는 '\'' 로 넣어요.
+  sed -E -e 's/(NP[0-9]+:auth:|passport:)[^ "'\''}]*/\1[가림]/g' \
          -e 's/-token:[^ ]*/-token:[가림]/g' \
+         -e 's/([?&]token=)[^ &"'\'']*/\1[가림]/g' \
          -e 's/("[A-Za-z_]*([Tt]oken|[Tt]icket|[Ss]ession[Ii]d|[Pp]assport)"[[:space:]]*:[[:space:]]*")[^"]*/\1[가림]/g' \
          -e 's/(ias:gt:|NP[0-9]+:)[^ "}]*/\1[가림]/g' \
          -e 's/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/[이메일 가림]/g' \
@@ -673,7 +737,7 @@ cmd_setup() { # [--runtime-from TAR.XZ] [--webview2-from DIR] [--import-crossove
 
 sub="${1:-status}"; shift || true
 case "$sub" in
-  setup|install-runtime|init-prefix|install-webview2|install-plug|install-ngm|configure|link-game|import-crossover|plug|game-direct|stop|status|status-code|detect-sources|winecfg|shell|settings|get|set|running|install-fonts|install-mono|download-status|report|uninstall|apply-settings)
+  setup|install-runtime|init-prefix|install-webview2|install-plug|install-ngm|configure|link-game|import-crossover|plug|game-direct|stop|status|status-code|detect-sources|winecfg|shell|settings|get|set|running|install-fonts|install-mono|download-status|report|uninstall|apply-settings|open-url)
     "cmd_${sub//-/_}" "$@" ;;
-  *) sed -n '2,12p' "$0"; exit 1 ;;
+  *) sed -n '2,14p' "$0"; exit 1 ;;
 esac

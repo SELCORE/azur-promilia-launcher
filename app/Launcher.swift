@@ -5,14 +5,47 @@ import SwiftUI
 
 @main
 struct AzurLauncherApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var model = LauncherModel()
     var body: some Scene {
         WindowGroup("아주르 프로밀리아 런처") {
             ContentView()
                 .environmentObject(model)
                 .frame(width: 520)
+                .onAppear { appDelegate.deliver = { [weak model] url in model?.openPlugURL(url) } }
         }
         .windowResizability(.contentSize)
+    }
+}
+
+/// 넥슨 플러그의 브라우저 로그인(구글, 애플 등)이 끝나면 Safari가 ngm:// (한국) 또는 nexonplug:// (일본)
+/// 링크를 이 앱에 넘겨요.
+/// SwiftUI는 링크가 올 때마다 창을 새로 열어서, 링크 이벤트를 여기서 먼저 받아요.
+/// 링크에 로그인 토큰이 들어 있어서 화면이나 기록에 남기지 않아요.
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    private var pending: [String] = []
+    /// 창이 뜨면 모델에 연결돼요. 링크로 앱이 처음 켜졌을 때는 그때까지 링크를 들고 있어요.
+    var deliver: ((String) -> Void)? { didSet { flush() } }
+
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        NSAppleEventManager.shared().setEventHandler(
+            self, andSelector: #selector(handleGetURL(_:withReply:)),
+            forEventClass: AEEventClass(kInternetEventClass), andEventID: AEEventID(kAEGetURL))
+    }
+
+    @objc func handleGetURL(_ event: NSAppleEventDescriptor, withReply reply: NSAppleEventDescriptor) {
+        guard let url = event.paramDescriptor(forKeyword: AEKeyword(keyDirectObject))?.stringValue,
+              ["ngm:", "nexonplug:"].contains(where: url.lowercased().hasPrefix) else { return }
+        pending.append(url)
+        flush()
+    }
+
+    private func flush() {
+        guard let deliver, !pending.isEmpty else { return }
+        let urls = pending
+        pending = []
+        urls.forEach(deliver)
     }
 }
 
@@ -307,6 +340,41 @@ final class LauncherModel: ObservableObject {
             try? await Task.sleep(nanoseconds: 3_000_000_000)
             acting = false
             await refreshRunning()
+        }
+    }
+
+    /// 브라우저 로그인을 마치고 돌아온 ngm:// / nexonplug:// 링크를 넥슨 플러그에 넘겨요 (azurctl.sh open-url).
+    /// 넥슨 플러그가 꺼져 있으면 켜면서 넘겨요.
+    func openPlugURL(_ url: String) {
+        Task {
+            let (status, out) = await ctlRun("open-url", url, timeout: 120)
+            if status != 0 {
+                errorText = "브라우저 로그인 결과를 넥슨 플러그에 넘기지 못했어요.\n"
+                    + out.trimmingCharacters(in: .whitespacesAndNewlines)
+            } else {
+                await bringPlugForward()
+            }
+            await refreshRunning()
+        }
+    }
+
+    /// Safari가 링크를 이 앱에 넘기면 macOS가 런처를 앞으로 꺼내요. 로그인 결과를 받는 건 넥슨 플러그라서
+    /// 넥슨 플러그를 앞으로 보내요. 방금 켰으면 나타날 때까지 20초까지 기다려요.
+    func bringPlugForward() async {
+        for _ in 0..<40 {
+            let plug = NSWorkspace.shared.runningApplications.first {
+                $0.localizedName == "NexonPlug.exe" || ($0.bundleIdentifier ?? "").hasSuffix(".NexonPlug.exe")
+            }
+            if let plug {
+                if #available(macOS 14.0, *) {
+                    NSApp.yieldActivation(to: plug)
+                    plug.activate()
+                } else {
+                    plug.activate(options: [.activateIgnoringOtherApps])
+                }
+                return
+            }
+            try? await Task.sleep(nanoseconds: 500_000_000)
         }
     }
 
