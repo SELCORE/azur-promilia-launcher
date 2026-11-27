@@ -6,6 +6,8 @@ CrossOver 없이 무료 Wine과 DXMT로 넥슨 플러그와 아주르 프로밀�
 > 넥슨은 macOS와 Wine을 지원하지 않아요. 계정 제재 등의 위험은 본인 책임이에요.
 > 넥슨 파일은 이 저장소에 없어요. 실행할 때 넥슨 공식 서버(`platform.nexon.com`)에서 받아요.
 
+https://youtu.be/msRSRG-WunI
+
 ## 지금 상태 (2026-11-27 기준)
 
 | 항목 | 결과 |
